@@ -92,7 +92,7 @@ def test_landing_page_security_principles(client: TestClient):
 
 
 def test_landing_page_footer_and_responsible_use_statement(client: TestClient):
-    """Verify footer contains responsible-use statement, version, and navigation."""
+    """Verify footer contains responsible-use statement, version, and public navigation."""
     settings = get_settings()
     response = client.get("/")
     assert response.status_code == 200
@@ -100,7 +100,8 @@ def test_landing_page_footer_and_responsible_use_statement(client: TestClient):
 
     assert "FootprintIQ is an authorized cybersecurity reconnaissance" in html
     assert f"Version {settings.APP_VERSION}" in html
-    assert f"Environment: {settings.APP_ENV}" in html
+    assert "Use it only within approved scope." in html
+    assert "Environment:" not in html
 
 
 def test_landing_page_cta_when_public_signup_enabled(client: TestClient):
@@ -174,9 +175,28 @@ def test_public_static_assets_load_correctly(client: TestClient):
 
     js_res = client.get("/static/js/htmx.min.js")
     assert js_res.status_code == 200
+    theme_res = client.get("/static/js/theme.js")
+    assert theme_res.status_code == 200
+    assert "footprintiq-theme" in theme_res.text
+
 
 @pytest.mark.parametrize("path", [
-    "/dashboard", "/investigations", "/investigations/example",
+    "/features", "/how-it-works", "/use-cases", "/security", "/about", "/faq", "/register",
+])
+def test_public_information_pages_are_accessible_without_authentication(client: TestClient, path: str):
+    response = client.get(path)
+    assert response.status_code == 200
+    assert "FootprintIQ" in response.text
+
+
+def test_public_pages_do_not_expose_deployment_environment(client: TestClient):
+    response = client.get("/security")
+    assert response.status_code == 200
+    assert "Environment:" not in response.text
+    assert "DATABASE_URL" not in response.text
+
+@pytest.mark.parametrize("path", [
+    "/dashboard", "/admin/dashboard", "/investigations", "/investigations/example",
     "/findings", "/scans", "/evidence", "/audit",
     "/admin/authorizations", "/admin/tools",
 ])

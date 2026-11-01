@@ -49,6 +49,101 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 router = APIRouter(include_in_schema=False)
 
+PUBLIC_PAGES = {
+    "features": {
+        "title": "Platform capabilities",
+        "heading": "A practical workspace for digital footprint investigations.",
+        "description": "Use the capabilities implemented in FootprintIQ to organize passive intelligence, authorized assessments, evidence, and reports. Optional integrations depend on your deployment.",
+        "eyebrow": "Platform",
+        "layout": "cards",
+        "items": [
+            {"mark": "01", "title": "Passive reconnaissance", "body": "Run the passive collection workflow for public domain intelligence, including DNS, RDAP, and WHOIS sources."},
+            {"mark": "02", "title": "Investigation management", "body": "Create investigation records, document scope and context, and review associated collection and assessment activity."},
+            {"mark": "03", "title": "Authorized Nmap assessments", "body": "Launch configured Nmap profiles only when the requested target is covered by an explicit authorization record."},
+            {"mark": "04", "title": "Vulnerability assessments", "body": "Create and track Greenbone vulnerability assessment jobs when the Greenbone service is configured and available."},
+            {"mark": "05", "title": "Evidence management", "body": "Review stored evidence with timestamps, provenance details, and SHA-256 integrity hashes."},
+            {"mark": "06", "title": "Investigation exports", "body": "Generate investigation reports in PDF and GraphML formats from the supported reporting workflows."},
+            {"mark": "07", "title": "Authentication and access control", "body": "Use server-managed sessions, role and permission checks, CSRF defenses, and administrator review of pending investigators."},
+        ],
+        "notice": "Scanner availability depends on the local deployment. Active scanning is restricted to explicitly authorized targets.",
+    },
+    "how-it-works": {
+        "title": "How it works",
+        "heading": "A clear path from scope to report.",
+        "description": "FootprintIQ organizes investigation tasks in a sequence that keeps engagement context, collection, assessment, and evidence together.",
+        "eyebrow": "Investigation workflow",
+        "layout": "steps",
+        "items": [
+            {"title": "Create an investigation", "body": "Record an investigation name, purpose, organization, lead investigator, and engagement context."},
+            {"title": "Define authorized scope", "body": "Document domain and network scope. Explicit authorization records are required for active assessment targets."},
+            {"title": "Collect passive intelligence", "body": "Run supported passive collectors and review their results as entities and evidence associated with the investigation."},
+            {"title": "Perform permitted assessments", "body": "Use configured Nmap or Greenbone workflows only when their required tools are available and the target is authorized."},
+            {"title": "Organize findings and evidence", "body": "Review collected evidence, vulnerability findings, scan results, and provenance in the investigation workspace."},
+            {"title": "Generate reports", "body": "Export supported PDF reports and GraphML investigation data for review and documentation."},
+        ],
+        "notice": "All active scanning requires explicit target authorization records and is enforced by backend checks.",
+    },
+    "use-cases": {
+        "title": "Use cases",
+        "heading": "Built for careful, authorized investigation work.",
+        "description": "FootprintIQ provides an organized workflow for teams that need to document scope, collect public intelligence, and preserve findings.",
+        "eyebrow": "Who it is for",
+        "layout": "cards",
+        "items": [
+            {"title": "Cybersecurity investigations", "body": "Keep investigation context, collection jobs, findings, and exports associated with a defined case."},
+            {"title": "Digital footprint analysis", "body": "Review supported public domain and DNS information as part of a documented investigation."},
+            {"title": "Domain exposure assessment", "body": "Organize passive domain intelligence and assess in-scope exposure with supported collection workflows."},
+            {"title": "Authorized network assessments", "body": "Run Nmap or vulnerability assessment workflows only for targets covered by the engagement's authorization."},
+            {"title": "Security research and documentation", "body": "Track evidence provenance and prepare PDF or GraphML outputs for research and review."},
+            {"title": "Investigator collaboration", "body": "Use investigator accounts subject to administrator approval and role-based access controls."},
+        ],
+    },
+    "security": {
+        "title": "Security and responsible use",
+        "heading": "Security controls are part of the workflow.",
+        "description": "FootprintIQ includes application-level controls for account access, browser sessions, request protection, and authorized scanning. These controls do not replace deployment hardening or an organization's security program.",
+        "eyebrow": "Security overview",
+        "layout": "cards",
+        "items": [
+            {"title": "Authentication", "body": "Passwords are stored as hashes. Browser sessions are managed server-side and issued through HTTP-only cookies."},
+            {"title": "Role-based access", "body": "Roles and permission checks protect API operations, administrative functions, and operational pages."},
+            {"title": "Investigator approval", "body": "When public registration is enabled, new accounts are pending and cannot access the application until approved by an administrator."},
+            {"title": "Session and request protections", "body": "Browser forms use CSRF validation. Session revocation and expiry are checked by the server; cookie transport settings depend on deployment configuration."},
+            {"title": "Active scanning authorization", "body": "Nmap and vulnerability assessment targets are checked against explicit authorization records before active work is allowed."},
+            {"title": "Evidence handling", "body": "Evidence records include provenance details and SHA-256 hashes. Administrators can review audit events for important actions."},
+        ],
+        "notice": "No certification, compliance attestation, or security guarantee is implied by these application controls.",
+        "notice_id": "responsible-use",
+    },
+    "about": {
+        "title": "About FootprintIQ",
+        "heading": "A workspace for responsible digital footprint investigations.",
+        "description": "FootprintIQ is an application for organizing authorized cybersecurity reconnaissance and investigation records.",
+        "eyebrow": "About",
+        "layout": "cards",
+        "items": [
+            {"title": "Purpose", "body": "Bring investigation context, supported passive collection, authorized assessments, evidence, and reporting into one workflow."},
+            {"title": "Intended users", "body": "Security investigators, analysts, educators, and research teams working within authorized scopes."},
+            {"title": "Responsible by design", "body": "Active assessments are restricted by target authorization checks, and new investigator access can require administrator approval."},
+        ],
+    },
+    "faq": {
+        "title": "Frequently asked questions",
+        "heading": "Questions about using FootprintIQ.",
+        "description": "A concise guide to access, investigations, integrations, and responsible use.",
+        "eyebrow": "FAQ",
+        "layout": "faq",
+        "items": [
+            {"title": "Who can access the application?", "body": "Users must sign in with an active account. Public investigator registration can be enabled or disabled by the application administrator; submitted accounts remain pending until approved."},
+            {"title": "Does FootprintIQ scan arbitrary targets?", "body": "No. Active Nmap and vulnerability assessment workflows require explicit authorization records covering the target."},
+            {"title": "Which integrations are required?", "body": "Passive collection uses the configured collectors. Nmap and Greenbone functions depend on their respective tools and services being available in the deployment."},
+            {"title": "What can I export?", "body": "The implemented investigation reporting workflows support PDF and GraphML exports."},
+            {"title": "How is evidence integrity represented?", "body": "Evidence records include a SHA-256 integrity hash alongside provenance metadata."},
+            {"title": "Does FootprintIQ provide a compliance certification?", "body": "No. The application does not claim certifications or compliance attestations. Operators are responsible for deployment configuration, access management, and applicable policies."},
+        ],
+    },
+}
+
 
 def _validate_csrf(request: Request, submitted_csrf: str):
     """Verifies CSRF token from form matches cookie."""
@@ -77,6 +172,8 @@ def _base_context(request: Request, db: Session, active_nav: str = "") -> Dict[s
         "current_user": current_user,
         "csrf_token": csrf_token,
         "active_nav": active_nav,
+        "current_year": datetime.now(timezone.utc).year,
+        "allow_public_signup": settings.ALLOW_PUBLIC_SIGNUP,
     }
 
 
@@ -84,11 +181,17 @@ def _base_context(request: Request, db: Session, active_nav: str = "") -> Dict[s
 # Public Landing Page & Executive Dashboard
 # =============================================================================
 @router.get("/", response_class=HTMLResponse)
-def render_landing(request: Request, db: Session = Depends(get_db)):
+def render_landing(
+    request: Request,
+    logged_out: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
     """Renders the public landing page for visitors without requiring authentication."""
     ctx = _base_context(request, db=db, active_nav="home")
     ctx.update({
         "allow_public_signup": settings.ALLOW_PUBLIC_SIGNUP,
+        "logged_out": logged_out,
+        "product_screenshots": [],
     })
     res = templates.TemplateResponse(request=request, name="landing.html", context=ctx)
     if not request.cookies.get(settings.CSRF_COOKIE_NAME):
@@ -101,6 +204,23 @@ def render_landing(request: Request, db: Session = Depends(get_db)):
             path="/",
         )
     return res
+
+
+@router.get("/features", response_class=HTMLResponse)
+@router.get("/how-it-works", response_class=HTMLResponse)
+@router.get("/use-cases", response_class=HTMLResponse)
+@router.get("/security", response_class=HTMLResponse)
+@router.get("/about", response_class=HTMLResponse)
+@router.get("/faq", response_class=HTMLResponse)
+def render_public_page(request: Request, db: Session = Depends(get_db)):
+    """Render one of the static, unauthenticated product information pages."""
+    slug = request.url.path.strip("/")
+    page = PUBLIC_PAGES.get(slug)
+    if page is None:
+        raise StarletteHTTPException(status_code=404, detail="Page not found")
+    ctx = _base_context(request, db=db, active_nav=slug)
+    ctx["page"] = page
+    return templates.TemplateResponse(request=request, name="public_page.html", context=ctx)
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
@@ -159,6 +279,12 @@ def render_dashboard(request: Request, db: Session = Depends(get_db)):
             path="/",
         )
     return res
+
+
+@router.get("/admin/dashboard", response_class=HTMLResponse)
+def render_admin_dashboard(request: Request, db: Session = Depends(get_db)):
+    """Render the existing operational dashboard at the administrator landing URL."""
+    return render_dashboard(request, db)
 
 
 # =============================================================================
