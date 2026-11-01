@@ -55,6 +55,13 @@ def test_alembic_fresh_database_initialization(tmp_path):
     assert "username" in user_columns
     assert "password_hash" in user_columns
     assert "role" in user_columns
+    assert "full_name" in user_columns
+    assert "account_status" in user_columns
+    assert "approved_at" in user_columns
+    assert "approved_by_id" in user_columns
+    assert "rejected_at" in user_columns
+    assert "rejected_by_id" in user_columns
+    assert "password_changed_at" in user_columns
 
     # Verify evidence table columns
     evidence_columns = {c["name"]: c for c in inspector.get_columns("evidence")}

@@ -29,9 +29,20 @@ class UserModel(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
     username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
     email: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    full_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(32), default="viewer", nullable=False, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    account_status: Mapped[str] = mapped_column(String(16), default="active", nullable=False, index=True)
+    approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    approved_by_id: Mapped[Optional[str]] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    rejected_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    rejected_by_id: Mapped[Optional[str]] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    password_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Throttling & Account Security
     failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -59,8 +70,15 @@ class UserModel(Base):
             "id": self.id,
             "username": self.username,
             "email": self.email,
+            "full_name": self.full_name,
             "role": self.role,
             "is_active": self.is_active,
+            "account_status": self.account_status,
+            "approved_at": self.approved_at.isoformat() if self.approved_at else None,
+            "approved_by_id": self.approved_by_id,
+            "rejected_at": self.rejected_at.isoformat() if self.rejected_at else None,
+            "rejected_by_id": self.rejected_by_id,
+            "password_changed_at": self.password_changed_at.isoformat() if self.password_changed_at else None,
             "is_locked": self.is_locked(),
             "last_login_at": self.last_login_at.isoformat() if self.last_login_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,

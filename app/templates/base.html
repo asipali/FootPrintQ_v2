@@ -22,14 +22,18 @@
       </a>
 
       <nav class="nav-links">
+        {% if current_user %}
         <a href="/dashboard" class="nav-link {% if active_nav == 'dashboard' %}active{% endif %}">Dashboard</a>
         <a href="/investigations" class="nav-link {% if active_nav == 'investigations' %}active{% endif %}">Investigations</a>
         <a href="/scans" class="nav-link {% if active_nav == 'scans' %}active{% endif %}">Scans &amp; Jobs</a>
         <a href="/findings" class="nav-link {% if active_nav == 'findings' %}active{% endif %}">Findings</a>
         <a href="/evidence" class="nav-link {% if active_nav == 'evidence' %}active{% endif %}">Evidence</a>
+        {% if current_user.role == 'administrator' %}
         <a href="/audit" class="nav-link {% if active_nav == 'audit' %}active{% endif %}">Audit Trail</a>
-        {% if current_user and current_user.role == 'administrator' %}
+        <a href="/admin/investigators" class="nav-link {% if active_nav == 'approvals' %}active{% endif %}">Approvals</a>
         <a href="/admin/authorizations" class="nav-link {% if active_nav == 'admin' %}active{% endif %}">Admin</a>
+        {% endif %}
+        <a href="/settings" class="nav-link {% if active_nav == 'settings' %}active{% endif %}">Settings</a>
         {% endif %}
       </nav>
 
@@ -40,6 +44,8 @@
           <span class="mono" style="color: var(--brand-primary); font-weight: 600;">{{ current_user.username }}</span>
           {% if current_user.role == 'administrator' %}
             <span class="badge badge-amber mono" style="font-size: 0.65rem;">ADMIN</span>
+          {% elif current_user.role == 'investigator' %}
+            <span class="badge badge-brand mono" style="font-size: 0.65rem;">INVESTIGATOR</span>
           {% elif current_user.role == 'analyst' %}
             <span class="badge badge-brand mono" style="font-size: 0.65rem;">ANALYST</span>
           {% else %}

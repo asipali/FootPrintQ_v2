@@ -17,10 +17,11 @@ from app.schemas.auth import (
 from app.core.security import (
     hash_password,
     ROLE_ADMINISTRATOR,
+    ROLE_INVESTIGATOR,
     VALID_ROLES,
 )
-from app.core.auth import log_audit_event
-from app.api.deps import require_role
+from app.core.auth import log_audit_event, transition_investigator_account
+from app.api.deps import require_role, verify_csrf_token
 
 router = APIRouter(prefix="/api/v1/users", tags=["User Management"])
 
@@ -34,6 +35,69 @@ def list_users(
     stmt = select(UserModel).order_by(UserModel.created_at.desc())
     users = db.scalars(stmt).all()
     return [user.to_dict() for user in users]
+
+
+@router.get("/pending-investigators", response_model=List[UserResponse])
+def list_pending_investigators(
+    admin: UserModel = Depends(require_role(ROLE_ADMINISTRATOR)),
+    db: Session = Depends(get_db),
+):
+    """Lists investigator registrations awaiting an administrator decision."""
+    users = db.scalars(
+        select(UserModel)
+        .where(
+            UserModel.role == ROLE_INVESTIGATOR,
+            UserModel.account_status == "pending",
+        )
+        .order_by(UserModel.created_at.asc())
+    ).all()
+    return [user.to_dict() for user in users]
+
+
+@router.post("/{user_id}/approve", response_model=UserResponse)
+def approve_investigator(
+    user_id: str,
+    request: Request,
+    admin: UserModel = Depends(require_role(ROLE_ADMINISTRATOR)),
+    csrf_ok: None = Depends(verify_csrf_token),
+    db: Session = Depends(get_db),
+):
+    """Approves a pending investigator. Only administrators may call this endpoint."""
+    user = db.get(UserModel, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    try:
+        transition_investigator_account(
+            db, user, admin, "approve",
+            request_id=getattr(request.state, "request_id", None),
+            client_ip=request.client.host if request.client else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return user.to_dict()
+
+
+@router.post("/{user_id}/reject", response_model=UserResponse)
+def reject_investigator(
+    user_id: str,
+    request: Request,
+    admin: UserModel = Depends(require_role(ROLE_ADMINISTRATOR)),
+    csrf_ok: None = Depends(verify_csrf_token),
+    db: Session = Depends(get_db),
+):
+    """Rejects a pending investigator. Only administrators may call this endpoint."""
+    user = db.get(UserModel, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    try:
+        transition_investigator_account(
+            db, user, admin, "reject",
+            request_id=getattr(request.state, "request_id", None),
+            client_ip=request.client.host if request.client else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return user.to_dict()
 
 
 @router.post("", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -148,11 +212,21 @@ def update_user_status(
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    user.is_active = payload.is_active
     if not payload.is_active:
+        user.is_active = False
+        if user.account_status == "active":
+            user.account_status = "disabled"
         # Revoke all active sessions for this user
         for s in user.sessions:
             s.is_revoked = True
+    else:
+        if user.account_status not in {"active", "disabled"}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Pending or rejected investigators must use the approval workflow.",
+            )
+        user.is_active = True
+        user.account_status = "active"
 
     db.commit()
     db.refresh(user)

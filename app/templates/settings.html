@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block title %}Settings &middot; FootprintIQ{% endblock %}
+
+{% block content %}
+<section class="card" style="max-width: 720px; margin: 2rem auto; padding: 1.5rem;">
+  <h2 style="margin-top: 0;">Settings</h2>
+  <h3>Account Security &rarr; Change Password</h3>
+  <p style="color: var(--text-secondary);">After a password change, all sessions are revoked and you must sign in again.</p>
+
+  {% if error %}
+  <div class="card" role="alert" style="margin: 1rem 0; padding: 0.8rem; color: var(--text-primary);">{{ error }}</div>
+  {% endif %}
+
+  <form method="post" action="/settings/password">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-group">
+      <label for="current_password" class="form-label">Current password</label>
+      <input id="current_password" name="current_password" type="password" class="form-control" autocomplete="current-password" required>
+    </div>
+    <div class="form-group">
+      <label for="new_password" class="form-label">New password</label>
+      <input id="new_password" name="new_password" type="password" class="form-control" autocomplete="new-password" minlength="12" required>
+      <div class="form-hint">At least 12 characters, with uppercase, lowercase, and a number or symbol.</div>
+    </div>
+    <div class="form-group">
+      <label for="confirm_password" class="form-label">Confirm new password</label>
+      <input id="confirm_password" name="confirm_password" type="password" class="form-control" autocomplete="new-password" minlength="12" required>
+    </div>
+    <button type="submit" class="btn btn-primary">Change Password</button>
+  </form>
+</section>
+{% endblock %}

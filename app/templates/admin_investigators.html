@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block title %}Investigator Approval Management &middot; FootprintIQ{% endblock %}
+
+{% block content %}
+<section class="card" style="max-width: 1100px; margin: 2rem auto; padding: 1.5rem;">
+  <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 1.25rem;">
+    <div>
+      <h2 style="margin: 0 0 0.35rem;">Investigator Approval Management</h2>
+      <p style="margin: 0; color: var(--text-secondary);">Review new investigator registrations before granting application access.</p>
+    </div>
+    <span class="badge badge-amber">{{ pending_users|length }} pending</span>
+  </div>
+
+  {% if message %}
+  <div class="card" role="status" style="margin-bottom: 1rem; padding: 0.8rem; color: var(--text-primary);">{{ message }}</div>
+  {% endif %}
+
+  {% if pending_users %}
+  <div style="overflow-x: auto;">
+    <table style="width: 100%; border-collapse: collapse; text-align: left;">
+      <thead>
+        <tr style="border-bottom: 1px solid var(--border-subtle);">
+          <th style="padding: 0.75rem;">Investigator</th>
+          <th style="padding: 0.75rem;">Email</th>
+          <th style="padding: 0.75rem;">Registration date</th>
+          <th style="padding: 0.75rem;">Status</th>
+          <th style="padding: 0.75rem;">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for user in pending_users %}
+        <tr style="border-bottom: 1px solid var(--border-subtle);">
+          <td style="padding: 0.75rem;">{{ user.full_name or user.username }}</td>
+          <td style="padding: 0.75rem;">{{ user.email }}</td>
+          <td style="padding: 0.75rem;">{{ user.created_at.strftime('%Y-%m-%d %H:%M UTC') }}</td>
+          <td style="padding: 0.75rem;"><span class="badge badge-amber">{{ user.account_status }}</span></td>
+          <td style="padding: 0.75rem; white-space: nowrap;">
+            <form method="post" action="/admin/investigators/{{ user.id }}/approve" style="display: inline;">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit" class="btn btn-primary">Approve</button>
+            </form>
+            <form method="post" action="/admin/investigators/{{ user.id }}/reject" style="display: inline;" onsubmit="return confirm('Reject this investigator registration?');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit" class="btn btn-secondary">Reject</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p style="color: var(--text-secondary);">There are no investigator registrations awaiting approval.</p>
+  {% endif %}
+</section>
+{% endblock %}

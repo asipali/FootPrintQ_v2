@@ -8,15 +8,18 @@
 
 ### Local setup
 
-Use Python 3.11 or newer. Install dependencies from the project metadata, copy `.env.example` to `.env` if no local configuration exists, apply migrations, provision an administrator if needed, and start the web app:
+Use Python 3.11 or newer. Install dependencies from the project metadata, copy `.env.example` to `.env` if no local configuration exists, apply migrations, provision the configured local demo accounts, and start the web app:
 
 ```powershell
 python -m pip install -e ".[dev]"
 if (!(Test-Path .env)) { Copy-Item .env.example .env }
+# If .env already exists, merge the DEMO_* settings from .env.example without replacing its database or secret settings.
 python -m alembic upgrade head
-python scripts/create_admin.py
+python scripts/provision_demo_accounts.py
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
+
+The local demo passwords are configured in `.env`; keep this setting disabled and use separately managed credentials in production.
 
 Open http://127.0.0.1:8000. The existing `footprintiq.db`, `data/`, and `evidence_storage/` are retained; do not replace them with fresh files.
 
@@ -25,12 +28,12 @@ The repository root contains the modernized **Python 3 / FastAPI / SQLAlchemy / 
 In Phase 3, production-conscious authentication and authorization have been established:
 - **Argon2id Password Hashing:** RFC 9106 compliant password hashing via `argon2-cffi`, eliminating weak polynomial hashes and deprecated bcrypt backends.
 - **Server-Side Session Store:** Stateful session tracking persisted in SQLite/PostgreSQL with SHA-256 hashed session identifiers, preventing database token leaks, session fixation, and enabling instant revocation.
-- **Strict Role-Based Access Control (RBAC):** Three discrete roles (`administrator`, `analyst`, `viewer`) with server-side permission enforcement (`require_permission` / `require_role`).
+- **Strict Role-Based Access Control (RBAC):** Four roles (`administrator`, `investigator`, `analyst`, `viewer`) with server-side permission enforcement (`require_permission` / `require_role`).
 - **Preparatory Scan Permission Model:** Dedicated permission tokens (`investigation.create`, `investigation.view`, `report.view`, `report.export`, `user.manage`, `scope.manage`, `recon.passive`, `recon.active`, `vulnerability.scan`).
 - **Comprehensive CSRF Defense:** Double-submit cookie with cryptographic validation (`footprintiq_csrf`) for all state-changing browser cookie requests (`POST`/`PUT`/`DELETE`), with safe exemption for API Bearer tokens.
 - **Account Lockout & Throttling:** Automatic 15-minute lockout after 5 consecutive failed login attempts to prevent brute-force credential stuffing.
 - **Tamper-Evident Security Audit Trail:** Structured recording of critical security events (`LOGIN_SUCCESS`, `LOGIN_FAILED`, `LOGOUT`, `USER_CREATED`, `ROLE_CHANGED`, `PERMISSION_DENIED`, `ADMIN_PROVISIONED`) with strict credential redaction.
-- **Safe Initial Administrator Provisioning:** Dedicated CLI command (`scripts/create_admin.py`) enforcing password complexity rules without default credentials.
+- **Safe Account Provisioning:** Optional local demo accounts are configured through environment variables; production demo provisioning is rejected. The separate administrator CLI enforces password complexity.
 - **Python-only runtime:** The FastAPI app is the sole application and starts at `app.main:app`.
 
 ---
@@ -45,13 +48,18 @@ In Phase 3, production-conscious authentication and authorization have been esta
 ├── .gitignore                         # Exclusions for virtualenvs, caches, db files
 ├── README.md                          # Developer setup and operational guide
 ├── scripts/
-│   └── create_admin.py                # Safe interactive/non-interactive admin provisioning
+│   ├── create_admin.py                # Safe interactive/non-interactive admin provisioning
+│   └── provision_demo_accounts.py     # Idempotent local demo-account provisioning
 ├── migrations/                        # Alembic schema migrations
 │   ├── env.py                         # Migration runner linking Base.metadata
 │   ├── script.py.mako                 # Migration revision template
 │   └── versions/
 │       ├── 0001_initial_investigation_foundation.py
-│       └── 0002_add_auth_and_sessions.py
+│       ├── 0002_add_auth_and_sessions.py
+│       ├── 0003_add_passive_recon_and_evidence.py
+│       ├── 0004_add_nmap_active_scans.py
+│       ├── 0005_add_vulnerability_scans.py
+│       └── 0006_account_approval_and_passwords.py
 ├── app/
 │   ├── __init__.py
 │   ├── main.py                        # FastAPI factory, security headers, & dashboard routes
@@ -65,7 +73,7 @@ In Phase 3, production-conscious authentication and authorization have been esta
 │   ├── models/                        # Declarative SQLAlchemy models
 │   │   ├── __init__.py
 │   │   ├── investigation.py           # InvestigationModel
-│   │   ├── user.py                    # UserModel & UserSessionModel
+│   │   ├── user.py                    # User lifecycle, approvals, password metadata & sessions
 │   │   └── audit.py                   # AuditLogModel
 │   ├── schemas/                       # Pydantic validation schemas
 │   │   ├── __init__.py
@@ -76,14 +84,17 @@ In Phase 3, production-conscious authentication and authorization have been esta
 │   │   ├── __init__.py
 │   │   ├── deps.py                    # get_current_user, require_role, require_permission, CSRF
 │   │   ├── health.py                  # /health/live, /health/ready, /api/v1/health
-│   │   ├── auth.py                    # /api/v1/auth/login, /api/v1/auth/logout, /api/v1/auth/me
-│   │   ├── users.py                   # /api/v1/users (Admin user management)
+│   │   ├── auth.py                    # Login, signup, password changes, sessions & profile
+│   │   ├── users.py                   # /api/v1/users (Admin users and approvals)
 │   │   ├── audit.py                   # /api/v1/audit-logs (Admin audit inspection)
 │   │   └── investigations.py          # /api/v1/investigations (Protected CRUD)
 │   ├── templates/                     # Jinja2 HTML templates
 │   │   ├── base.html                  # Responsive layout, navbar, user badge, signout form
 │   │   ├── dashboard.html             # Investigation workspace view
 │   │   ├── login.html                 # Investigator authentication form
+│   │   ├── signup.html                # Approval-gated investigator registration
+│   │   ├── admin_investigators.html   # Administrator approval dashboard
+│   │   ├── settings.html              # Self-service password changes
 │   │   ├── access_denied.html         # HTTP 403 Access Denied template
 │   │   └── components/
 │   │       └── health_badge.html      # HTMX dynamic polling fragment
@@ -94,6 +105,7 @@ In Phase 3, production-conscious authentication and authorization have been esta
 │           └── htmx.min.js            # Standalone HTMX library (v1.9.12)
 └── tests/                             # Automated test suite (100% passing)
     ├── conftest.py                    # Test database fixtures, isolated clients, user mocks
+    ├── test_account_management.py     # Demo accounts, approvals, RBAC & password lifecycle
     ├── test_health.py                 # Liveness & readiness probe tests
     ├── test_dashboard.py              # Dashboard rendering & HTMX component tests
     ├── test_database.py               # Session lifecycle & model constraint tests
@@ -108,9 +120,43 @@ In Phase 3, production-conscious authentication and authorization have been esta
 
 ---
 
+## Demo Account Credentials
+
+These credentials are for local development and demonstrations only. Both demo passwords are configured in `.env.example` and must match the values used in your local `.env`.
+
+| Account type | Email | Password |
+| --- | --- | --- |
+| Administrator | `admin@footprint.org` | `FootprintIQ-Demo-2026!` |
+| Investigator | `investigator@footprint.org` | `FootprintIQ-Demo-2026!` |
+
+### Administrator account
+
+- When `DEMO_ACCOUNTS_ENABLED=true`, the administrator account is created on first app startup or by `python scripts/provision_demo_accounts.py`.
+- Provisioning is repeatable and does not reset or modify existing accounts or passwords.
+- Sign in at `http://127.0.0.1:8000/login`. Administrators can manage users, access the admin dashboard and audit log, and approve or reject investigator registrations at **Approvals**.
+
+### Investigator account and registration
+
+- The pre-created investigator demo account is active immediately and has investigator permissions.
+- New users can register from the sign-in page. New registrations are assigned the investigator role and remain pending; they cannot sign in until an administrator approves them.
+- Investigators can use authorized investigation, reconnaissance, scan, evidence, and report features. Active scan authorization remains subject to existing target authorization controls.
+
+### Password management
+
+- Administrators and investigators can change only their own password from **Settings → Account Security → Change Password**.
+- Passwords must be at least 12 characters and include an uppercase letter, a lowercase letter, and a number or symbol.
+- A successful change revokes all sessions, including the current session; sign in again using the new password.
+
+### Environment configuration and production warning
+
+- `.env.example` includes `DEMO_ACCOUNTS_ENABLED`, `DEMO_ADMIN_USERNAME`, `DEMO_ADMIN_EMAIL`, `DEMO_ADMIN_PASSWORD`, `DEMO_INVESTIGATOR_USERNAME`, `DEMO_INVESTIGATOR_EMAIL`, and `DEMO_INVESTIGATOR_PASSWORD`.
+- The application defaults demo provisioning to disabled. Production settings reject enabling it.
+- Demo credentials must never be used in production. Production administrators must use separately configured credentials and a strong secret-managed password. Never commit production credentials, secrets, or production `.env` files.
+- The password above is a public local demo credential, not a production secret.
+
 ## 3. Safe Administrator Provisioning
 
-FootprintIQ contains **no default credentials** and **never pre-seeds passwords**. Before operators can log in, an initial administrator must be provisioned.
+For non-demo environments, FootprintIQ supports secure administrator provisioning without pre-seeded credentials. If demo provisioning is disabled, provision the initial administrator with the CLI below.
 
 ### 3.1 Interactive CLI Provisioning (Recommended)
 
@@ -153,6 +199,7 @@ FootprintIQ enforces server-side authorization at both the role level and indivi
 | :--- | :--- | :--- |
 | **Administrator** (`administrator`) | All permissions | Manage user accounts, assign roles, inspect security audit logs, configure system behavior, create & view investigations. |
 | **Security Analyst** (`analyst`) | `investigation.create`, `investigation.view`, `report.view`, `report.export`, `scope.manage`, `recon.passive` | Create campaigns, review scope, analyze findings, export reports. Cannot manage users, alter permissions, or view raw audit logs. |
+| **Investigator** (`investigator`) | Investigation, reporting, passive/authorized active reconnaissance, and vulnerability scan capabilities | Operate investigator workflows after approval. Active scans still require explicit target authorization. |
 | **Read-Only Viewer** (`viewer`) | `investigation.view`, `report.view` | View authorized investigation records and generated reports. Cannot create campaigns, launch scans, or modify any resource. |
 
 ### Preparatory Scanning Permission Model (Phase 3 -> Phase 4/5)
