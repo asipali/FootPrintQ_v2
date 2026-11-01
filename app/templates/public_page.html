@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title }} | FootprintIQ{% endblock %}
+{% block description %}{{ page.description }}{% endblock %}
+
+{% block content %}
+<section class="public-page">
+  <div class="public-page-content">
+    <header class="public-page-heading">
+      <span class="eyebrow">{{ page.eyebrow }}</span>
+      <h1>{{ page.heading }}</h1>
+      <p>{{ page.description }}</p>
+    </header>
+
+    {% if page["items"] %}
+      {% if page.layout == "faq" %}
+      <div class="faq-list">
+        {% for item in page["items"] %}
+        <details>
+          <summary>{{ item.title }}</summary>
+          <p>{{ item.body }}</p>
+        </details>
+        {% endfor %}
+      </div>
+      {% elif page.layout == "steps" %}
+      <div class="public-steps">
+        {% for item in page["items"] %}
+        <article class="public-card">
+          <span class="public-card-mark">{{ "%02d"|format(loop.index) }}</span>
+          <h3>{{ item.title }}</h3>
+          <p>{{ item.body }}</p>
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="public-grid">
+        {% for item in page["items"] %}
+        <article class="public-card">
+          <span class="public-card-mark" aria-hidden="true">{{ item.mark or "%02d"|format(loop.index) }}</span>
+          <h3>{{ item.title }}</h3>
+          <p>{{ item.body }}</p>
+        </article>
+        {% endfor %}
+      </div>
+      {% endif %}
+    {% endif %}
+
+    {% if page.notice %}
+    <aside class="authorization-note" {% if page.notice_id %}id="{{ page.notice_id }}"{% endif %}>{{ page.notice }}</aside>
+    {% endif %}
+  </div>
+</section>
+
+<section class="public-cta public-page-cta">
+  <div>
+    <span class="eyebrow">{{ page.cta_eyebrow or "Explore FootprintIQ" }}</span>
+    <h2>{{ page.cta_title or "Bring your investigation workflow together." }}</h2>
+    <p>{{ page.cta_body or "Access is subject to account policy. Active assessments require explicit target authorization." }}</p>
+  </div>
+  <div class="hero-actions">
+    {% if allow_public_signup %}
+    <a class="btn btn-primary" href="/signup">Request investigator access</a>
+    {% else %}
+    <a class="btn btn-primary" href="/login">Sign in to your workspace</a>
+    {% endif %}
+    <a class="btn btn-secondary" href="/features">Explore the platform</a>
+  </div>
+</section>
+{% endblock %}

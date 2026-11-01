@@ -3,6 +3,7 @@
 import os
 import uuid
 import time
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 from pathlib import Path
@@ -111,6 +112,9 @@ def create_app(settings: Settings = None) -> FastAPI:
 
     # Store settings on app state
     app.state.settings = app_settings
+
+    def default_dashboard_for(user: UserModel) -> str:
+        return "/admin/dashboard" if user.role == ROLE_ADMINISTRATOR else "/dashboard"
 
     # Mount static assets
     if STATIC_DIR.exists():
@@ -314,17 +318,20 @@ def create_app(settings: Settings = None) -> FastAPI:
     @app.get("/login", response_class=HTMLResponse, include_in_schema=False)
     def render_login(
         request: Request,
-        next: str = "/",
+        next: Optional[str] = None,
         logged_out: Optional[str] = None,
         registered: Optional[str] = None,
         password_changed: Optional[str] = None,
         db: Session = Depends(get_db),
     ):
         """Renders login page or redirects if already authenticated."""
-        safe_next = next if is_safe_redirect_url(next) else "/"
+        safe_next = next if next and is_safe_redirect_url(next) else None
         current_user = get_current_user_optional(request, db=db)
         if current_user:
-            return RedirectResponse(url=safe_next, status_code=status.HTTP_303_SEE_OTHER)
+            return RedirectResponse(
+                url=safe_next or default_dashboard_for(current_user),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
 
         csrf_token = request.cookies.get(app_settings.CSRF_COOKIE_NAME) or generate_csrf_token()
         message = None
@@ -354,6 +361,7 @@ def create_app(settings: Settings = None) -> FastAPI:
                 "allow_public_signup": app_settings.ALLOW_PUBLIC_SIGNUP,
                 "allow_signup": app_settings.ALLOW_PUBLIC_SIGNUP,
                 "default_role": ROLE_INVESTIGATOR,
+                "current_year": datetime.now(timezone.utc).year,
             }
         )
         # Ensure CSRF cookie is set
@@ -374,14 +382,14 @@ def create_app(settings: Settings = None) -> FastAPI:
         username_or_email: str = Form(...),
         password: str = Form(...),
         csrf_token: str = Form(...),
-        next: str = Form("/"),
+        next: str = Form(""),
         db: Session = Depends(get_db),
     ):
         """Handles web browser login form submission with CSRF check and session issuance."""
         client_ip = request.client.host if request.client else None
         req_id = getattr(request.state, "request_id", None)
         user_agent = request.headers.get("user-agent")
-        safe_next = next if is_safe_redirect_url(next) else "/"
+        safe_next = next if next and is_safe_redirect_url(next) else None
 
         # 1. CSRF validation
         expected_csrf = request.cookies.get(app_settings.CSRF_COOKIE_NAME)
@@ -399,6 +407,7 @@ def create_app(settings: Settings = None) -> FastAPI:
                     "next_url": safe_next,
                     "error": "Security validation failed (CSRF mismatch). Please reload the page.",
                     "allow_public_signup": app_settings.ALLOW_PUBLIC_SIGNUP,
+                    "current_year": datetime.now(timezone.utc).year,
                 }
             )
 
@@ -426,6 +435,7 @@ def create_app(settings: Settings = None) -> FastAPI:
                     "next_url": safe_next,
                     "error": str(exc.detail),
                     "allow_public_signup": app_settings.ALLOW_PUBLIC_SIGNUP,
+                    "current_year": datetime.now(timezone.utc).year,
                 }
             )
             res.set_cookie(
@@ -447,7 +457,10 @@ def create_app(settings: Settings = None) -> FastAPI:
             max_age_seconds=app_settings.SESSION_MAX_AGE_SECONDS,
         )
 
-        redirect_res = RedirectResponse(url=safe_next, status_code=status.HTTP_303_SEE_OTHER)
+        redirect_res = RedirectResponse(
+            url=safe_next or default_dashboard_for(user),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
 
         # Attach session and CSRF cookies
         redirect_res.set_cookie(
@@ -470,6 +483,7 @@ def create_app(settings: Settings = None) -> FastAPI:
         )
         return redirect_res
 
+    @app.get("/register", response_class=HTMLResponse, include_in_schema=False)
     @app.get("/signup", response_class=HTMLResponse, include_in_schema=False)
     def render_signup(
         request: Request,
@@ -494,9 +508,11 @@ def create_app(settings: Settings = None) -> FastAPI:
                 "error": None,
                 "allow_public_signup": app_settings.ALLOW_PUBLIC_SIGNUP,
                 "allow_signup": app_settings.ALLOW_PUBLIC_SIGNUP,
+                "current_year": datetime.now(timezone.utc).year,
                 "default_role": ROLE_INVESTIGATOR,
                 "full_name_val": "",
                 "email_val": "",
+                "current_year": datetime.now(timezone.utc).year,
             }
         )
         if not request.cookies.get(app_settings.CSRF_COOKIE_NAME):
@@ -544,6 +560,7 @@ def create_app(settings: Settings = None) -> FastAPI:
                     "default_role": ROLE_INVESTIGATOR,
                     "full_name_val": full_name or "",
                     "email_val": email or "",
+                    "current_year": datetime.now(timezone.utc).year,
                 },
             )
 
@@ -618,7 +635,7 @@ def create_app(settings: Settings = None) -> FastAPI:
                 client_ip=request.client.host if request.client else None,
             )
 
-        res = RedirectResponse(url="/login?logged_out=1", status_code=status.HTTP_303_SEE_OTHER)
+        res = RedirectResponse(url="/?logged_out=1", status_code=status.HTTP_303_SEE_OTHER)
         res.delete_cookie(
             key=app_settings.SESSION_COOKIE_NAME,
             path="/",

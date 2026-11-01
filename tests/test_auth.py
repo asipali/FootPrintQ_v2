@@ -147,7 +147,7 @@ def test_web_dashboard_login_and_logout_flow(client: TestClient, admin_user: Use
         follow_redirects=False
     )
     assert logout_res.status_code == 303
-    assert "logged_out=1" in logout_res.headers["location"]
+    assert logout_res.headers["location"] == "/?logged_out=1"
 
 
 # =============================================================================
@@ -177,8 +177,8 @@ def test_is_safe_redirect_url():
     assert is_safe_redirect_url("/login\r\nSet-Cookie: evil=1") is False
 
 
-def test_login_rejects_open_redirect_and_defaults_to_home(client: TestClient, admin_user: UserModel):
-    """Verify that a login attempt with an open redirect target redirects safely to /."""
+def test_login_rejects_open_redirect_and_uses_role_dashboard(client: TestClient, admin_user: UserModel):
+    """Verify that unsafe login return paths use the authenticated role's dashboard."""
     get_res = client.get("/login?next=//attacker.com/steal")
     csrf_token = get_res.cookies.get("footprintiq_csrf")
 
@@ -194,8 +194,41 @@ def test_login_rejects_open_redirect_and_defaults_to_home(client: TestClient, ad
         follow_redirects=False
     )
     assert post_res.status_code == 303
-    # Must fallback safely to /
-    assert post_res.headers["location"] == "/"
+    assert post_res.headers["location"] == "/admin/dashboard"
+
+
+def test_web_login_defaults_admin_to_admin_dashboard(client: TestClient, admin_user: UserModel):
+    get_res = client.get("/login")
+    csrf_token = get_res.cookies.get("footprintiq_csrf")
+    post_res = client.post(
+        "/auth/login",
+        data={
+            "username_or_email": "admin_test",
+            "password": "AdminSecure123!#",
+            "csrf_token": csrf_token,
+        },
+        cookies={"footprintiq_csrf": csrf_token},
+        follow_redirects=False,
+    )
+    assert post_res.status_code == 303
+    assert post_res.headers["location"] == "/admin/dashboard"
+
+
+def test_web_login_defaults_investigator_to_workspace(client: TestClient, analyst_user: UserModel):
+    get_res = client.get("/login")
+    csrf_token = get_res.cookies.get("footprintiq_csrf")
+    post_res = client.post(
+        "/auth/login",
+        data={
+            "username_or_email": "analyst_test",
+            "password": "AnalystSecure123!#",
+            "csrf_token": csrf_token,
+        },
+        cookies={"footprintiq_csrf": csrf_token},
+        follow_redirects=False,
+    )
+    assert post_res.status_code == 303
+    assert post_res.headers["location"] == "/dashboard"
 
 
 # =============================================================================
@@ -280,7 +313,7 @@ def test_web_signup_flow(client: TestClient, db_session: Session):
     # 1. GET /signup
     get_res = client.get("/signup")
     assert get_res.status_code == 200
-    assert "Create Investigator Account" in get_res.text
+    assert "Request investigator access" in get_res.text
     csrf_token = get_res.cookies.get("footprintiq_csrf")
     assert csrf_token is not None
 

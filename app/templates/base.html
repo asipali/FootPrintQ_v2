@@ -3,27 +3,46 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{% block title %}FootprintIQ — Digital Footprint Investigator{% endblock %}</title>
-  <meta name="description" content="FootprintIQ: Authorized cybersecurity reconnaissance, scope enforcement, OSINT digital footprint, and vulnerability investigation platform.">
+  <meta name="color-scheme" content="light dark">
+  <title>{% block title %}FootprintIQ | Digital Footprint Intelligence{% endblock %}</title>
+  <meta name="description" content="{% block description %}FootprintIQ organizes authorized digital footprint investigations, passive intelligence, assessments, evidence, and reporting.{% endblock %}">
+  <script>
+    (function () {
+      try {
+        var savedTheme = localStorage.getItem("footprintiq-theme");
+        var systemPrefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+        document.documentElement.dataset.theme = savedTheme === "light" || savedTheme === "dark"
+          ? savedTheme
+          : (systemPrefersDark ? "dark" : "light");
+      } catch (error) {
+        document.documentElement.dataset.theme = "dark";
+      }
+    }());
+  </script>
   <link rel="stylesheet" href="/static/css/main.css">
-  <script src="/static/js/htmx.min.js"></script>
+  <script src="/static/js/theme.js" defer></script>
+  <script src="/static/js/htmx.min.js" defer></script>
   {% block extra_head %}{% endblock %}
 </head>
-<body>
-  <!-- Application Header -->
+<body class="{% if current_user %}app-shell{% else %}public-shell{% endif %}">
+  {% if current_user and current_user.role == 'administrator' %}
+    {% set dashboard_url = '/admin/dashboard' %}
+  {% else %}
+    {% set dashboard_url = '/dashboard' %}
+  {% endif %}
   <header class="app-header">
     <div class="header-container">
-      <a href="/" class="brand">
-        <div class="brand-icon">IQ</div>
+      <a href="/" class="brand" aria-label="FootprintIQ home">
+        <div class="brand-icon" aria-hidden="true">F</div>
         <div class="brand-text">
           <h1>FootprintIQ</h1>
           <span>Digital Footprint Investigator</span>
         </div>
       </a>
 
-      <nav class="nav-links">
+      <nav class="nav-links" aria-label="Primary navigation">
         {% if current_user %}
-        <a href="/dashboard" class="nav-link {% if active_nav == 'dashboard' %}active{% endif %}">Dashboard</a>
+        <a href="{{ dashboard_url }}" class="nav-link {% if active_nav == 'dashboard' %}active{% endif %}">Dashboard</a>
         <a href="/investigations" class="nav-link {% if active_nav == 'investigations' %}active{% endif %}">Investigations</a>
         <a href="/scans" class="nav-link {% if active_nav == 'scans' %}active{% endif %}">Scans &amp; Jobs</a>
         <a href="/findings" class="nav-link {% if active_nav == 'findings' %}active{% endif %}">Findings</a>
@@ -34,54 +53,95 @@
         <a href="/admin/authorizations" class="nav-link {% if active_nav == 'admin' %}active{% endif %}">Admin</a>
         {% endif %}
         <a href="/settings" class="nav-link {% if active_nav == 'settings' %}active{% endif %}">Settings</a>
+        {% else %}
+        <a href="{% if active_nav == 'home' %}#hero{% else %}/{% endif %}" class="nav-link {% if active_nav == 'home' %}active{% endif %}">Home</a>
+        <a href="/features" class="nav-link {% if active_nav == 'features' %}active{% endif %}">Platform</a>
+        <a href="/how-it-works" class="nav-link {% if active_nav == 'how-it-works' %}active{% endif %}">How it works</a>
+        <a href="/use-cases" class="nav-link {% if active_nav == 'use-cases' %}active{% endif %}">Use cases</a>
+        <a href="/security" class="nav-link {% if active_nav == 'security' %}active{% endif %}">Security</a>
+        <a href="/about" class="nav-link {% if active_nav == 'about' %}active{% endif %}">About</a>
+        <a href="/faq" class="nav-link {% if active_nav == 'faq' %}active{% endif %}">FAQ</a>
         {% endif %}
       </nav>
 
       <div class="header-meta">
         {% if current_user %}
-        <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem;">
-          <span style="color: var(--text-secondary);">User:</span>
-          <span class="mono" style="color: var(--brand-primary); font-weight: 600;">{{ current_user.username }}</span>
-          {% if current_user.role == 'administrator' %}
-            <span class="badge badge-amber mono" style="font-size: 0.65rem;">ADMIN</span>
-          {% elif current_user.role == 'investigator' %}
-            <span class="badge badge-brand mono" style="font-size: 0.65rem;">INVESTIGATOR</span>
-          {% elif current_user.role == 'analyst' %}
-            <span class="badge badge-brand mono" style="font-size: 0.65rem;">ANALYST</span>
-          {% else %}
-            <span class="badge badge-info mono" style="font-size: 0.65rem;">VIEWER</span>
-          {% endif %}
+        <div class="user-identity">
+          <span class="user-name">{{ current_user.username }}</span>
+          <span class="badge {% if current_user.role == 'administrator' %}badge-amber{% else %}badge-brand{% endif %}">{% if current_user.role == 'administrator' %}ADMIN{% else %}{{ current_user.role }}{% endif %}</span>
         </div>
-
-        <form method="POST" action="/auth/logout" style="margin: 0; display: inline;">
+        <form method="POST" action="/auth/logout" class="logout-form">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button type="submit" class="btn btn-secondary" style="font-size: 0.72rem; padding: 0.3rem 0.65rem;">
-            Sign Out
-          </button>
+          <button type="submit" class="btn btn-secondary">Sign out</button>
         </form>
         {% else %}
-        <a href="/login" class="btn btn-primary" style="font-size: 0.75rem; padding: 0.35rem 0.8rem;">
-          Sign In
-        </a>
+        <a href="/login" class="btn btn-secondary header-login">Sign In</a>
+        {% if allow_public_signup %}
+        <a href="/signup" class="btn btn-primary header-register">Request access</a>
         {% endif %}
-        <span class="badge badge-brand mono">v{{ app_version }}</span>
+        {% endif %}
+        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch theme" aria-pressed="false">
+          <span class="theme-toggle-icon" aria-hidden="true">◐</span>
+          <span data-theme-label>Theme</span>
+        </button>
       </div>
+
+      <details class="mobile-menu">
+        <summary aria-label="Open navigation menu">Menu</summary>
+        <nav class="mobile-menu-panel" aria-label="Mobile navigation">
+          {% if current_user %}
+          <a href="{{ dashboard_url }}">Dashboard</a>
+          <a href="/investigations">Investigations</a>
+          <a href="/scans">Scans &amp; Jobs</a>
+          <a href="/findings">Findings</a>
+          <a href="/evidence">Evidence</a>
+          {% if current_user.role == 'administrator' %}
+          <a href="/admin/investigators">Approvals</a>
+          <a href="/admin/authorizations">Admin</a>
+          <a href="/audit">Audit trail</a>
+          {% endif %}
+          <a href="/settings">Settings</a>
+          {% else %}
+          <a href="/">Home</a>
+          <a href="/features">Platform</a>
+          <a href="/how-it-works">How it works</a>
+          <a href="/use-cases">Use cases</a>
+          <a href="/security">Security</a>
+          <a href="/about">About</a>
+          <a href="/faq">FAQ</a>
+          <a href="/login">Sign in</a>
+          {% if allow_public_signup %}<a href="/signup">Request access</a>{% endif %}
+          {% endif %}
+        </nav>
+      </details>
     </div>
   </header>
 
-  <!-- Main Content Area -->
   <main class="main-content">
+    {% if logged_out %}
+    <div class="notice notice-success" role="status">You have been signed out securely.</div>
+    {% endif %}
     {% block content %}{% endblock %}
   </main>
 
-  <!-- Application Footer -->
   <footer class="app-footer">
     <div class="footer-container">
-      <div>
-        <span>FootprintIQ &copy; 2026 &middot; Authorized Educational &amp; Lab Reconnaissance Platform</span>
+      <div class="footer-brand">
+        <a class="brand" href="/" aria-label="FootprintIQ home">
+          <span class="brand-icon" aria-hidden="true">F</span>
+          <span class="brand-text"><strong>FootprintIQ</strong><small>Digital Footprint Investigator</small></span>
+        </a>
+        <p>FootprintIQ is an authorized cybersecurity reconnaissance and investigation workspace. Use it only within approved scope.</p>
+        <span class="footer-version">Version {{ app_version }}</span>
       </div>
-      <div class="mono">
-        <span>Env: {{ app_env }} &middot; DB: {{ db_dialect }}</span>
+      <nav class="footer-links" aria-label="Footer navigation">
+        <div><strong>Explore</strong><a href="/features">Platform</a><a href="/how-it-works">How it works</a><a href="/use-cases">Use cases</a></div>
+        <div><strong>Company</strong><a href="/about">About</a><a href="/security">Security</a><a href="/faq">FAQ</a></div>
+        <div><strong>Access</strong><a href="/login">Sign in</a>{% if allow_public_signup %}<a href="/signup">Request access</a>{% endif %}<a href="/security#responsible-use">Responsible use</a></div>
+      </nav>
+      <div class="footer-legal">
+        <span>&copy; {{ current_year }} FootprintIQ</span>
+        <span>Use only with proper authorization.</span>
       </div>
     </div>
   </footer>

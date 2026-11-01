@@ -23,6 +23,12 @@ The local demo passwords are configured in `.env`; keep this setting disabled an
 
 Open http://127.0.0.1:8000. The existing `footprintiq.db`, `data/`, and `evidence_storage/` are retained; do not replace them with fresh files.
 
+### Public website and theme
+
+The public website is available at `/`, with information pages at `/features`, `/how-it-works`, `/use-cases`, `/security`, `/about`, and `/faq`. Registration is available at `/signup` and the compatibility route `/register`; sign-in remains at `/login`.
+
+The shared theme control supports light and dark modes. The selected preference is stored in the browser's `localStorage` under `footprintiq-theme`; it does not store account credentials or session tokens. After sign-in, administrators are directed to `/admin/dashboard` and other roles to `/dashboard`, unless a safe `next` destination was requested.
+
 The repository root contains the modernized **Python 3 / FastAPI / SQLAlchemy / Jinja2 + HTMX** application for FootprintIQ, migrating away from the legacy React 19 / Express 4 runtime.
 
 In Phase 3, production-conscious authentication and authorization have been established:
