@@ -4,6 +4,7 @@ Date: 2026-11-01
 Branch: `migration/python-only`  
 Recovery point: `pre-python-only-2026-11-01`
 
+
 ## Original architecture
 
 The repository contained two applications: a React/Vite frontend and Express/TypeScript API at the root (`src/`, `server.ts`, `package.json`, `bun.lock`, `vite.config.ts`), and a FastAPI application under `python_app/`. The Python app included Jinja templates, static assets, SQLAlchemy models, REST and HTML routes, Alembic migrations, security controls, reconnaissance integrations, evidence storage, reports, scripts, and tests.
