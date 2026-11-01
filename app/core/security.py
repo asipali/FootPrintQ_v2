@@ -101,9 +101,10 @@ def normalize_identifier(identifier: str) -> str:
 
 ROLE_ADMINISTRATOR = "administrator"
 ROLE_ANALYST = "analyst"
+ROLE_INVESTIGATOR = "investigator"
 ROLE_VIEWER = "viewer"
 
-VALID_ROLES = {ROLE_ADMINISTRATOR, ROLE_ANALYST, ROLE_VIEWER}
+VALID_ROLES = {ROLE_ADMINISTRATOR, ROLE_ANALYST, ROLE_INVESTIGATOR, ROLE_VIEWER}
 
 # Preparatory permissions as specified in Section 10 of Phase 3
 ROLE_PERMISSIONS: Dict[str, Set[str]] = {
@@ -128,11 +129,23 @@ ROLE_PERMISSIONS: Dict[str, Set[str]] = {
         "scope.manage",
         "recon.passive"
     },
+    ROLE_INVESTIGATOR: {
+        "investigation.create",
+        "investigation.view",
+        "report.view",
+        "report.export",
+        "scope.manage",
+        "recon.passive",
+        "recon.active",
+        "vulnerability.scan",
+    },
     ROLE_VIEWER: {
         "investigation.view",
         "report.view"
     }
 }
+
+ROLE_PERMISSIONS[ROLE_ADMINISTRATOR].update(ROLE_PERMISSIONS[ROLE_INVESTIGATOR])
 
 
 def get_role_permissions(role: str) -> Set[str]:

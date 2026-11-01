@@ -1,24 +1,29 @@
-import uuid
 from fastapi import APIRouter, Depends, Request, Response, HTTPException, status
 from sqlalchemy.orm import Session
-from sqlalchemy import select
 
 from app.database import get_db
 from app.config import get_settings
-from app.schemas.auth import LoginRequest, SignupRequest, TokenResponse, UserSummary, UserResponse
+from app.schemas.auth import (
+    LoginRequest,
+    SignupRequest,
+    PasswordChangeRequest,
+    TokenResponse,
+    UserSummary,
+    UserResponse,
+)
 from app.core.auth import (
     authenticate_user,
     create_user_session,
+    create_pending_investigator,
+    change_user_password,
     invalidate_session,
     log_audit_event,
 )
 from app.core.security import (
     generate_csrf_token,
     get_role_permissions,
-    hash_password,
     validate_password_strength,
     ROLE_ADMINISTRATOR,
-    ROLE_ANALYST,
 )
 from app.api.deps import (
     get_current_user,
@@ -152,15 +157,7 @@ def signup_api(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    """Self-service registration endpoint for new investigators.
-
-    Enforces:
-    - Public signup policy check (ALLOW_PUBLIC_SIGNUP)
-    - Strict password complexity (Argon2id hashing)
-    - Uniqueness of username and email
-    - Least-privileged role assignment (never administrator)
-    - Structured audit logging
-    """
+    """Registers a pending investigator without issuing an authenticated session."""
     settings = get_settings()
     if not settings.ALLOW_PUBLIC_SIGNUP:
         raise HTTPException(
@@ -183,41 +180,16 @@ def signup_api(
             detail=pw_reason,
         )
 
-    # Check for existing username or email
-    existing_user = db.scalars(
-        select(UserModel).where(UserModel.username == payload.username)
-    ).first()
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Username '{payload.username}' is already registered.",
+    try:
+        new_user = create_pending_investigator(
+            db=db,
+            username=payload.username,
+            email=str(payload.email),
+            password=payload.password,
+            full_name=payload.full_name,
         )
-
-    existing_email = db.scalars(
-        select(UserModel).where(UserModel.email == payload.email)
-    ).first()
-    if existing_email:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Email address '{payload.email}' is already registered.",
-        )
-
-    # Enforce non-admin role
-    assigned_role = settings.DEFAULT_SIGNUP_ROLE
-    if assigned_role == ROLE_ADMINISTRATOR:
-        assigned_role = ROLE_ANALYST
-
-    new_user = UserModel(
-        id=f"usr-{uuid.uuid4().hex[:12]}",
-        username=payload.username,
-        email=payload.email,
-        password_hash=hash_password(payload.password),
-        role=assigned_role,
-        is_active=True,
-    )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     log_audit_event(
         db=db,
@@ -237,9 +209,44 @@ def signup_api(
         email=data["email"],
         role=data["role"],
         is_active=data["is_active"],
+        account_status=data["account_status"],
+        full_name=data["full_name"],
+        approved_at=new_user.approved_at,
+        approved_by_id=new_user.approved_by_id,
+        rejected_at=new_user.rejected_at,
+        rejected_by_id=new_user.rejected_by_id,
+        password_changed_at=new_user.password_changed_at,
         is_locked=data["is_locked"],
         last_login_at=new_user.last_login_at,
         created_at=new_user.created_at,
         updated_at=new_user.updated_at,
     )
 
+
+@router.post("/password")
+def change_password_api(
+    payload: PasswordChangeRequest,
+    request: Request,
+    current_user: UserModel = Depends(get_current_user),
+    csrf_ok: None = Depends(verify_csrf_token),
+    db: Session = Depends(get_db),
+):
+    """Changes the authenticated user's password and invalidates every session."""
+    try:
+        change_user_password(
+            db=db,
+            user=current_user,
+            current_password=payload.current_password,
+            new_password=payload.new_password,
+            confirm_password=payload.confirm_password,
+            request_id=getattr(request.state, "request_id", None),
+            client_ip=request.client.host if request.client else None,
+        )
+    except ValueError as exc:
+        error_status = (
+            status.HTTP_422_UNPROCESSABLE_ENTITY
+            if "password" in str(exc).lower() and "incorrect" not in str(exc).lower()
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=error_status, detail=str(exc)) from exc
+    return {"message": "Password changed. Sign in again with your new password."}

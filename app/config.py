@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from functools import lru_cache
 from typing import List, Literal, Optional
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -58,9 +58,18 @@ class Settings(BaseSettings):
         description="Whether self-service investigator registration is permitted"
     )
     DEFAULT_SIGNUP_ROLE: str = Field(
-        default="analyst",
-        description="Default least-privileged role for newly registered users (must never be administrator)"
+        default="investigator",
+        description="Legacy compatibility setting; public registrations always receive the investigator role"
     )
+
+    # Local-only demonstration identities. Provisioning is disabled unless explicitly enabled.
+    DEMO_ACCOUNTS_ENABLED: bool = False
+    DEMO_ADMIN_USERNAME: str = "footprint_admin_demo"
+    DEMO_ADMIN_EMAIL: str = "admin@footprint.org"
+    DEMO_ADMIN_PASSWORD: Optional[str] = None
+    DEMO_INVESTIGATOR_USERNAME: str = "footprint_investigator_demo"
+    DEMO_INVESTIGATOR_EMAIL: str = "investigator@footprint.org"
+    DEMO_INVESTIGATOR_PASSWORD: Optional[str] = None
 
     # Passive Reconnaissance & Evidence Storage (Phase 4)
     EVIDENCE_STORAGE_PATH: str = Field(
@@ -187,6 +196,19 @@ class Settings(BaseSettings):
             raise ValueError("CRITICAL: DEBUG mode must be disabled (False) in production environments.")
         return v
 
+    @model_validator(mode="after")
+    def validate_demo_provisioning(self):
+        if self.APP_ENV == "production" and self.DEMO_ACCOUNTS_ENABLED:
+            raise ValueError("Demo account provisioning cannot be enabled in production.")
+        if self.DEMO_ACCOUNTS_ENABLED and (
+            not self.DEMO_ADMIN_PASSWORD or not self.DEMO_INVESTIGATOR_PASSWORD
+        ):
+            raise ValueError(
+                "DEMO_ADMIN_PASSWORD and DEMO_INVESTIGATOR_PASSWORD are required when "
+                "DEMO_ACCOUNTS_ENABLED is true."
+            )
+        return self
+
     @property
     def is_sqlite(self) -> bool:
         """Returns True if database connection string targets SQLite."""
@@ -224,4 +246,3 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
-

@@ -34,7 +34,8 @@ def test_settings(tmp_path_factory) -> Settings:
         DATABASE_URL=f"sqlite:///{db_path}",
         SECRET_KEY="test-secret-key-for-unit-testing-only-12345",
         LOG_LEVEL="WARNING",
-        LOG_FORMAT="standard"
+        LOG_FORMAT="standard",
+        DEMO_ACCOUNTS_ENABLED=False,
     )
 
 

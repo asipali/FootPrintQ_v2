@@ -49,7 +49,7 @@
         <line x1="12" y1="8" x2="12.01" y2="8"/>
       </svg>
       <div>
-        New accounts are provisioned with the <strong>{{ default_role }}</strong> role.
+        New accounts receive the <strong>investigator</strong> role and remain pending until an administrator approves them.
       </div>
     </div>
 
@@ -72,23 +72,20 @@
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
       <div class="form-group">
-        <label for="username" class="form-label">Username *</label>
+        <label for="full_name" class="form-label">Full name *</label>
         <input 
           type="text" 
-          id="username" 
-          name="username" 
+          id="full_name"
+          name="full_name"
           required 
           autofocus
-          autocomplete="username"
-          placeholder="e.g. jdoe_investigator"
-          value="{{ username_val or '' }}"
+          autocomplete="name"
+          placeholder="e.g. Jane Doe"
+          value="{{ full_name_val or '' }}"
           class="form-control"
           style="padding: 0.6rem 0.85rem; font-size: 0.85rem;"
-          pattern="^[a-zA-Z0-9_\-\.]+$"
-          minlength="3"
-          maxlength="64"
+          maxlength="128"
         >
-        <div class="form-hint">At least 3 characters. Letters, numbers, underscores, and hyphens.</div>
       </div>
 
       <div class="form-group">
@@ -99,7 +96,7 @@
           name="email" 
           required 
           autocomplete="email"
-          placeholder="e.g. analyst@footprintiq.local"
+          placeholder="e.g. investigator@footprint.org"
           value="{{ email_val or '' }}"
           class="form-control"
           style="padding: 0.6rem 0.85rem; font-size: 0.85rem;"

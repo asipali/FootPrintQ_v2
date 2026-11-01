@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Literal
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from app.core.security import normalize_identifier, VALID_ROLES
 
 
@@ -41,6 +41,13 @@ class UserResponse(BaseModel):
     email: str
     role: str
     is_active: bool
+    account_status: str = "active"
+    full_name: Optional[str] = None
+    approved_at: Optional[datetime] = None
+    approved_by_id: Optional[str] = None
+    rejected_at: Optional[datetime] = None
+    rejected_by_id: Optional[str] = None
+    password_changed_at: Optional[datetime] = None
     is_locked: bool
     last_login_at: Optional[datetime] = None
     created_at: datetime
@@ -52,7 +59,7 @@ class UserCreate(BaseModel):
     username: str = Field(..., min_length=3, max_length=64, pattern=r"^[a-zA-Z0-9_\-\.]+$")
     email: EmailStr
     password: str = Field(..., min_length=12, max_length=128, description="Minimum 12 characters")
-    role: Literal["administrator", "analyst", "viewer"] = "viewer"
+    role: Literal["administrator", "analyst", "investigator", "viewer"] = "viewer"
 
     @field_validator("username")
     @classmethod
@@ -67,31 +74,46 @@ class UserCreate(BaseModel):
 
 class SignupRequest(BaseModel):
     """Payload for self-service investigator account registration."""
-    username: str = Field(..., min_length=3, max_length=64, pattern=r"^[a-zA-Z0-9_\-\.]+$")
+    model_config = ConfigDict(extra="forbid")
+
+    username: Optional[str] = Field(None, min_length=3, max_length=64, pattern=r"^[a-zA-Z0-9_\-\.]+$")
+    full_name: Optional[str] = Field(None, min_length=1, max_length=128)
     email: EmailStr
     password: str = Field(..., min_length=12, max_length=128, description="Minimum 12 characters")
     confirm_password: Optional[str] = None
 
     @field_validator("username")
     @classmethod
-    def normalize_user(cls, v: str) -> str:
-        return normalize_identifier(v)
+    def normalize_user(cls, v: Optional[str]) -> Optional[str]:
+        return normalize_identifier(v) if v else None
 
     @field_validator("email")
     @classmethod
     def normalize_mail(cls, v: str) -> str:
         return normalize_identifier(v)
 
+    @field_validator("full_name")
+    @classmethod
+    def normalize_full_name(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v else None
+
 
 
 class UserUpdateRole(BaseModel):
     """Payload for updating user role (restricted to administrator)."""
-    role: Literal["administrator", "analyst", "viewer"]
+    role: Literal["administrator", "analyst", "investigator", "viewer"]
 
 
 class UserUpdateStatus(BaseModel):
     """Payload for enabling or disabling user account (restricted to administrator)."""
     is_active: bool
+
+
+class PasswordChangeRequest(BaseModel):
+    """Current and replacement credentials for changing the authenticated user's password."""
+    current_password: str = Field(..., min_length=1, max_length=128)
+    new_password: str = Field(..., min_length=12, max_length=128)
+    confirm_password: str = Field(..., min_length=12, max_length=128)
 
 
 class AuditLogResponse(BaseModel):

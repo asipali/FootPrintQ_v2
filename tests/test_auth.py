@@ -202,10 +202,11 @@ def test_login_rejects_open_redirect_and_defaults_to_home(client: TestClient, ad
 # Self-Service Public Signup Tests
 # =============================================================================
 
-def test_api_signup_success_creates_analyst_account(client: TestClient, db_session: Session):
-    """Verify public signup creates an active account with least-privileged analyst role."""
+def test_api_signup_success_creates_pending_investigator(client: TestClient, db_session: Session):
+    """Public signup always creates an inactive investigator awaiting administrator approval."""
     payload = {
         "username": "new_analyst_user",
+        "full_name": "New Investigator",
         "email": "new_analyst@example.com",
         "password": "ComplexPassword123!#",
         "confirm_password": "ComplexPassword123!#"
@@ -215,14 +216,17 @@ def test_api_signup_success_creates_analyst_account(client: TestClient, db_sessi
     data = res.json()
     assert data["username"] == "new_analyst_user"
     assert data["email"] == "new_analyst@example.com"
-    assert data["role"] == "analyst"  # Must NEVER be administrator
-    assert data["is_active"] is True
+    assert data["role"] == "investigator"
+    assert data["account_status"] == "pending"
+    assert data["is_active"] is False
+    assert "footprintiq_session" not in res.cookies
 
     # Verify user in database has Argon2 password hash
     from sqlalchemy import select
     user = db_session.execute(
         select(UserModel).where(UserModel.username == "new_analyst_user")
     ).scalar_one()
+    assert user.account_status == "pending"
     assert user.password_hash.startswith("$argon2id$")
     assert verify_password("ComplexPassword123!#", user.password_hash)
 
@@ -285,7 +289,8 @@ def test_web_signup_flow(client: TestClient, db_session: Session):
         "/auth/signup",
         data={
             "username": "web_registered_analyst",
-            "email": "web_analyst@footprintiq.local",
+            "full_name": "Web Investigator",
+            "email": "web_analyst@example.com",
             "password": "WebRegisterPassword123!#",
             "confirm_password": "WebRegisterPassword123!#",
             "csrf_token": csrf_token
@@ -299,10 +304,11 @@ def test_web_signup_flow(client: TestClient, db_session: Session):
     # 3. GET /login?registered=1 displays success banner
     login_res = client.get("/login?registered=1")
     assert login_res.status_code == 200
-    assert "Account successfully registered" in login_res.text
+    assert "Your investigator account has been submitted successfully." in login_res.text
+    assert "pending administrator approval" in login_res.text
 
 
-def test_demo_account_provisioning_idempotency_and_security():
+def test_demo_account_provisioning_idempotency_and_security(db_session: Session):
     """Verify demo account provisioning script runs safely, idempotently, and never creates admin."""
     from scripts.provision_demo_account import provision_demo_account
 
@@ -311,10 +317,10 @@ def test_demo_account_provisioning_idempotency_and_security():
         email="demo_test@footprintiq.local",
         password="DemoPassword123!#",
         reset_if_exists=True,
+        db=db_session,
     )
     assert success is True
     assert result["role"] == "analyst"
     assert result["admin_access"] is False
     assert result["live_auth_tested"] is True
     assert result["session_issuance_tested"] is True
-

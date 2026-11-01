@@ -12,6 +12,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, or_
+from urllib.parse import quote
 
 from app.config import get_settings
 from app.database import get_db, check_database_connection
@@ -21,9 +22,14 @@ from app.models.recon import TargetAuthorizationModel, CollectionJobModel, Evide
 from app.models.scan import ActiveScanJobModel, ScanFindingPortModel, ScanFindingHostModel
 from app.models.vulnerability import VulnerabilityScanJobModel, VulnerabilityFindingModel
 from app.models.audit import AuditLogModel
-from app.api.deps import get_current_user_optional, get_current_user
+from app.api.deps import get_current_user_optional, get_current_user, require_role
 from app.core.security import generate_csrf_token, is_safe_redirect_url
-from app.core.auth import log_audit_event
+from app.core.auth import (
+    change_user_password,
+    log_audit_event,
+    transition_investigator_account,
+)
+from app.core.security import ROLE_ADMINISTRATOR
 from app.services.scoring.calculator import ExposureScorer
 from app.services.reporting.pdf_generator import InvestigationReportGenerator
 from app.services.reporting.graphml_generator import GraphMLExporter
@@ -622,6 +628,142 @@ def download_investigation_graphml(
 # =============================================================================
 # Standalone Pages: Findings, Scans, Evidence, Audit, Admin
 # =============================================================================
+@router.get("/settings", response_class=HTMLResponse)
+def render_settings(request: Request, db: Session = Depends(get_db)):
+    """Displays account settings for the authenticated user."""
+    ctx = _base_context(request, db=db, active_nav="settings")
+    ctx["error"] = request.query_params.get("error")
+    return templates.TemplateResponse(request=request, name="settings.html", context=ctx)
+
+
+@router.post("/settings/password")
+def handle_password_change(
+    request: Request,
+    current_password: str = Form(...),
+    new_password: str = Form(...),
+    confirm_password: str = Form(...),
+    csrf_token: str = Form(...),
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Changes the signed-in user's password and clears the invalidated browser session."""
+    _validate_csrf(request, csrf_token)
+    try:
+        change_user_password(
+            db=db,
+            user=current_user,
+            current_password=current_password,
+            new_password=new_password,
+            confirm_password=confirm_password,
+            request_id=getattr(request.state, "request_id", None),
+            client_ip=request.client.host if request.client else None,
+        )
+    except ValueError as exc:
+        return RedirectResponse(
+            url=f"/settings?error={quote(str(exc), safe='')}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    response = RedirectResponse(url="/login?password_changed=1", status_code=status.HTTP_303_SEE_OTHER)
+    response.delete_cookie(
+        key=settings.SESSION_COOKIE_NAME,
+        path="/",
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite=settings.SESSION_COOKIE_SAMESITE,
+    )
+    response.delete_cookie(
+        key=settings.CSRF_COOKIE_NAME,
+        path="/",
+        secure=settings.cookie_secure,
+        samesite=settings.SESSION_COOKIE_SAMESITE,
+    )
+    return response
+
+
+@router.get("/admin/investigators", response_class=HTMLResponse)
+def render_investigator_approvals(
+    request: Request,
+    admin: UserModel = Depends(require_role(ROLE_ADMINISTRATOR)),
+    db: Session = Depends(get_db),
+):
+    """Lists pending investigator registrations for administrators."""
+    ctx = _base_context(request, db=db, active_nav="approvals")
+    ctx["pending_users"] = db.scalars(
+        select(UserModel)
+        .where(UserModel.role == "investigator", UserModel.account_status == "pending")
+        .order_by(UserModel.created_at.asc())
+    ).all()
+    ctx["message"] = request.query_params.get("message") or request.query_params.get("error")
+    return templates.TemplateResponse(request=request, name="admin_investigators.html", context=ctx)
+
+
+@router.post("/admin/investigators/{user_id}/approve")
+def handle_investigator_approval(
+    user_id: str,
+    request: Request,
+    csrf_token: str = Form(...),
+    admin: UserModel = Depends(require_role(ROLE_ADMINISTRATOR)),
+    db: Session = Depends(get_db),
+):
+    """Approves a pending investigator after administrator and CSRF validation."""
+    _validate_csrf(request, csrf_token)
+    user = db.get(UserModel, user_id)
+    if not user:
+        return RedirectResponse(
+            url="/admin/investigators?error=Registration+not+found",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    try:
+        transition_investigator_account(
+            db, user, admin, "approve",
+            request_id=getattr(request.state, "request_id", None),
+            client_ip=request.client.host if request.client else None,
+        )
+    except ValueError as exc:
+        return RedirectResponse(
+            url=f"/admin/investigators?error={quote(str(exc), safe='')}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    return RedirectResponse(
+        url="/admin/investigators?message=Investigator+approved",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/admin/investigators/{user_id}/reject")
+def handle_investigator_rejection(
+    user_id: str,
+    request: Request,
+    csrf_token: str = Form(...),
+    admin: UserModel = Depends(require_role(ROLE_ADMINISTRATOR)),
+    db: Session = Depends(get_db),
+):
+    """Rejects a pending investigator after administrator and CSRF validation."""
+    _validate_csrf(request, csrf_token)
+    user = db.get(UserModel, user_id)
+    if not user:
+        return RedirectResponse(
+            url="/admin/investigators?error=Registration+not+found",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    try:
+        transition_investigator_account(
+            db, user, admin, "reject",
+            request_id=getattr(request.state, "request_id", None),
+            client_ip=request.client.host if request.client else None,
+        )
+    except ValueError as exc:
+        return RedirectResponse(
+            url=f"/admin/investigators?error={quote(str(exc), safe='')}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    return RedirectResponse(
+        url="/admin/investigators?message=Investigator+rejected",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 @router.get("/findings", response_class=HTMLResponse)
 def render_findings(
     request: Request,

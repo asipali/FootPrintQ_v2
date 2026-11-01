@@ -39,6 +39,8 @@ from app.api.deps import (
 from app.core.auth import (
     authenticate_user,
     create_user_session,
+    create_pending_investigator,
+    provision_demo_accounts,
     invalidate_session,
     log_audit_event,
 )
@@ -47,10 +49,12 @@ from app.core.security import (
     is_safe_redirect_url,
     validate_password_strength,
     hash_password,
-    ROLE_ANALYST,
+    ROLE_INVESTIGATOR,
     ROLE_ADMINISTRATOR,
     has_permission,
 )
+from app.schemas.auth import SignupRequest
+from pydantic import ValidationError
 import hmac
 
 logger = get_logger("footprintiq.app")
@@ -75,6 +79,17 @@ async def lifespan(app: FastAPI):
         logger.info(f"Database connectivity confirmed ({settings.DATABASE_URL.split('://')[0]}).")
     else:
         logger.warning(f"Database startup probe warning: {msg}")
+
+    if settings.DEMO_ACCOUNTS_ENABLED:
+        db = SessionLocal()
+        try:
+            result = provision_demo_accounts(db, settings)
+            logger.info(
+                "Demo account provisioning complete "
+                f"(created={len(result['created'])}, existing={len(result['existing'])})."
+            )
+        finally:
+            db.close()
 
     yield
 
@@ -125,7 +140,7 @@ def create_app(settings: Settings = None) -> FastAPI:
         is_api = path.startswith("/api/v1/")
         is_operational_page = path == "/dashboard" or path.startswith((
             "/investigations", "/findings", "/scans", "/evidence",
-            "/audit", "/admin/",
+            "/audit", "/admin/", "/settings",
         ))
         is_protected = (
             is_api and path not in public_paths
@@ -138,6 +153,7 @@ def create_app(settings: Settings = None) -> FastAPI:
             db = next(db_generator) if db_generator else SessionLocal()
             try:
                 current_user = get_current_user_optional(request, db=db)
+                current_user_role = current_user.role if current_user else None
             finally:
                 if db_generator is None:
                     db.close()
@@ -155,7 +171,7 @@ def create_app(settings: Settings = None) -> FastAPI:
                     headers={"X-Request-ID": req_id},
                 )
             role_restricted = path.startswith(("/admin/", "/audit"))
-            if role_restricted and current_user.role != ROLE_ADMINISTRATOR:
+            if role_restricted and current_user_role != ROLE_ADMINISTRATOR:
                 return JSONResponse(
                     status_code=status.HTTP_403_FORBIDDEN,
                     content={"error": {"status_code": 403, "message": "Administrator role required", "request_id": req_id}},
@@ -175,7 +191,7 @@ def create_app(settings: Settings = None) -> FastAPI:
                     required_permission = "scope.manage"
                 elif path.startswith("/investigations/"):
                     required_permission = "investigation.create"
-            if required_permission and not has_permission(current_user.role, required_permission):
+            if required_permission and not has_permission(current_user_role, required_permission):
                 return JSONResponse(
                     status_code=status.HTTP_403_FORBIDDEN,
                     content={"error": {"status_code": 403, "message": f"Operation requires permission: {required_permission}", "request_id": req_id}},
@@ -301,6 +317,7 @@ def create_app(settings: Settings = None) -> FastAPI:
         next: str = "/",
         logged_out: Optional[str] = None,
         registered: Optional[str] = None,
+        password_changed: Optional[str] = None,
         db: Session = Depends(get_db),
     ):
         """Renders login page or redirects if already authenticated."""
@@ -314,7 +331,13 @@ def create_app(settings: Settings = None) -> FastAPI:
         if logged_out:
             message = "You have been logged out safely."
         elif registered:
-            message = "Account successfully registered! Please sign in with your credentials."
+            message = (
+                "Your investigator account has been submitted successfully. "
+                "Your account is pending administrator approval. "
+                "You will be able to log in after approval."
+            )
+        elif password_changed:
+            message = "Your password was changed successfully. Sign in again with your new password."
 
         response = templates.TemplateResponse(
             request=request,
@@ -329,6 +352,8 @@ def create_app(settings: Settings = None) -> FastAPI:
                 "message": message,
                 "error": None,
                 "allow_public_signup": app_settings.ALLOW_PUBLIC_SIGNUP,
+                "allow_signup": app_settings.ALLOW_PUBLIC_SIGNUP,
+                "default_role": ROLE_INVESTIGATOR,
             }
         )
         # Ensure CSRF cookie is set
@@ -386,12 +411,12 @@ def create_app(settings: Settings = None) -> FastAPI:
                 client_ip=client_ip,
                 request_id=req_id,
             )
-        except StarletteHTTPException:
+        except StarletteHTTPException as exc:
             new_csrf = generate_csrf_token()
             res = templates.TemplateResponse(
                 request=request,
                 name="login.html",
-                status_code=401,
+                status_code=exc.status_code,
                 context={
                     "app_name": app_settings.APP_NAME,
                     "app_version": app_settings.APP_VERSION,
@@ -399,7 +424,7 @@ def create_app(settings: Settings = None) -> FastAPI:
                     "current_user": None,
                     "csrf_token": new_csrf,
                     "next_url": safe_next,
-                    "error": "Invalid username or password. Please verify your credentials.",
+                    "error": str(exc.detail),
                     "allow_public_signup": app_settings.ALLOW_PUBLIC_SIGNUP,
                 }
             )
@@ -468,6 +493,10 @@ def create_app(settings: Settings = None) -> FastAPI:
                 "csrf_token": csrf_token,
                 "error": None,
                 "allow_public_signup": app_settings.ALLOW_PUBLIC_SIGNUP,
+                "allow_signup": app_settings.ALLOW_PUBLIC_SIGNUP,
+                "default_role": ROLE_INVESTIGATOR,
+                "full_name_val": "",
+                "email_val": "",
             }
         )
         if not request.cookies.get(app_settings.CSRF_COOKIE_NAME):
@@ -484,7 +513,7 @@ def create_app(settings: Settings = None) -> FastAPI:
     @app.post("/auth/signup", include_in_schema=False)
     async def handle_signup(
         request: Request,
-        username: str = Form(...),
+        username: Optional[str] = Form(None),
         email: str = Form(...),
         full_name: Optional[str] = Form(None),
         password: str = Form(...),
@@ -495,110 +524,66 @@ def create_app(settings: Settings = None) -> FastAPI:
         """Processes self-service registration form submission with strict server-side validation."""
         client_ip = request.client.host if request.client else None
         req_id = getattr(request.state, "request_id", None)
-
         expected_csrf = request.cookies.get(app_settings.CSRF_COOKIE_NAME)
-        if not expected_csrf or not hmac.compare_digest(csrf_token.strip(), expected_csrf.strip()):
+
+        def render_signup_error(message: str, status_code: int):
+            csrf_value = expected_csrf or generate_csrf_token()
             return templates.TemplateResponse(
                 request=request,
                 name="signup.html",
-                status_code=403,
+                status_code=status_code,
                 context={
                     "app_name": app_settings.APP_NAME,
                     "app_version": app_settings.APP_VERSION,
                     "app_env": app_settings.APP_ENV,
                     "current_user": None,
-                    "csrf_token": expected_csrf or generate_csrf_token(),
-                    "error": "Security validation failed (CSRF mismatch). Please reload the page.",
+                    "csrf_token": csrf_value,
+                    "error": message,
+                    "allow_signup": app_settings.ALLOW_PUBLIC_SIGNUP,
                     "allow_public_signup": app_settings.ALLOW_PUBLIC_SIGNUP,
-                }
+                    "default_role": ROLE_INVESTIGATOR,
+                    "full_name_val": full_name or "",
+                    "email_val": email or "",
+                },
             )
+
+        if not expected_csrf or not hmac.compare_digest(csrf_token.strip(), expected_csrf.strip()):
+            return render_signup_error("Security validation failed (CSRF mismatch). Please reload the page.", 403)
 
         if not app_settings.ALLOW_PUBLIC_SIGNUP:
-            return templates.TemplateResponse(
-                request=request,
-                name="signup.html",
-                status_code=403,
-                context={
-                    "app_name": app_settings.APP_NAME,
-                    "app_version": app_settings.APP_VERSION,
-                    "app_env": app_settings.APP_ENV,
-                    "current_user": None,
-                    "csrf_token": expected_csrf,
-                    "error": "Public registration is currently disabled by administrator policy.",
-                    "allow_public_signup": False,
-                }
-            )
+            return render_signup_error("Public registration is currently disabled by administrator policy.", 403)
 
-        clean_username = username.strip()
-        clean_email = email.strip().lower()
+        try:
+            payload = SignupRequest(
+                username=username or None,
+                full_name=full_name or None,
+                email=email,
+                password=password,
+                confirm_password=confirm_password,
+            )
+        except ValidationError:
+            return render_signup_error("Enter a valid name and email address.", 422)
 
         if password != confirm_password:
-            return templates.TemplateResponse(
-                request=request,
-                name="signup.html",
-                status_code=400,
-                context={
-                    "app_name": app_settings.APP_NAME,
-                    "app_version": app_settings.APP_VERSION,
-                    "app_env": app_settings.APP_ENV,
-                    "current_user": None,
-                    "csrf_token": expected_csrf,
-                    "error": "Passwords do not match.",
-                    "allow_public_signup": True,
-                }
-            )
+            return render_signup_error("Passwords do not match.", 400)
 
         is_valid_pwd, pwd_error = validate_password_strength(password)
         if not is_valid_pwd:
-            return templates.TemplateResponse(
-                request=request,
-                name="signup.html",
-                status_code=400,
-                context={
-                    "app_name": app_settings.APP_NAME,
-                    "app_version": app_settings.APP_VERSION,
-                    "app_env": app_settings.APP_ENV,
-                    "current_user": None,
-                    "csrf_token": expected_csrf,
-                    "error": f"Password policy violation: {pwd_error}",
-                    "allow_public_signup": True,
-                }
-            )
+            return render_signup_error(f"Password policy violation: {pwd_error}", 422)
 
-        # Check existing username or email
-        existing = db.execute(
-            select(UserModel).where(
-                (UserModel.username == clean_username) | (UserModel.email == clean_email)
-            )
-        ).scalars().first()
-        if existing:
-            return templates.TemplateResponse(
-                request=request,
-                name="signup.html",
-                status_code=409,
-                context={
-                    "app_name": app_settings.APP_NAME,
-                    "app_version": app_settings.APP_VERSION,
-                    "app_env": app_settings.APP_ENV,
-                    "current_user": None,
-                    "csrf_token": expected_csrf,
-                    "error": "An account with that username or email address already exists.",
-                    "allow_public_signup": True,
-                }
-            )
+        if not payload.full_name:
+            return render_signup_error("Full name is required.", 422)
 
-        # Create new user with least-privileged role (ROLE_ANALYST, never administrator)
-        new_user = UserModel(
-            id=str(uuid.uuid4()),
-            username=clean_username,
-            email=clean_email,
-            password_hash=hash_password(password),
-            role=ROLE_ANALYST,
-            is_active=True,
-        )
-        db.add(new_user)
-        db.commit()
-        db.refresh(new_user)
+        try:
+            new_user = create_pending_investigator(
+                db=db,
+                username=payload.username,
+                email=str(payload.email),
+                password=payload.password,
+                full_name=payload.full_name,
+            )
+        except ValueError as exc:
+            return render_signup_error(str(exc), 409)
 
         log_audit_event(
             db=db,
@@ -612,27 +597,6 @@ def create_app(settings: Settings = None) -> FastAPI:
         )
 
         return RedirectResponse(url="/login?registered=1", status_code=status.HTTP_303_SEE_OTHER)
-
-        # Attach session and CSRF cookies
-        redirect_res.set_cookie(
-            key=app_settings.SESSION_COOKIE_NAME,
-            value=raw_token,
-            max_age=app_settings.SESSION_MAX_AGE_SECONDS,
-            httponly=True,
-            secure=app_settings.cookie_secure,
-            samesite=app_settings.SESSION_COOKIE_SAMESITE,
-            path="/",
-        )
-        fresh_csrf = generate_csrf_token()
-        redirect_res.set_cookie(
-            key=app_settings.CSRF_COOKIE_NAME,
-            value=fresh_csrf,
-            max_age=app_settings.SESSION_MAX_AGE_SECONDS,
-            secure=app_settings.cookie_secure,
-            samesite=app_settings.SESSION_COOKIE_SAMESITE,
-            path="/",
-        )
-        return redirect_res
 
     @app.post("/auth/logout", include_in_schema=False)
     async def handle_logout(

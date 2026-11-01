@@ -25,6 +25,7 @@ from typing import Optional, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models.user import UserModel
 from app.core.security import (
@@ -66,9 +67,12 @@ def provision_demo_account(
     email: str = "demo@footprintiq.local",
     password: Optional[str] = None,
     reset_if_exists: bool = False,
+    db: Optional[Session] = None,
 ) -> Tuple[bool, dict]:
     """Provisions or verifies the demo analyst account safely and idempotently."""
-    db = SessionLocal()
+    owns_session = db is None
+    if db is None:
+        db = SessionLocal()
     try:
         # Check existing account
         existing = db.execute(
@@ -205,7 +209,8 @@ def provision_demo_account(
             "session_issuance_tested": True,
         }
     finally:
-        db.close()
+        if owns_session:
+            db.close()
 
 
 def main():
