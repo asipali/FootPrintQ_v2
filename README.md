@@ -126,24 +126,19 @@ In Phase 3, production-conscious authentication and authorization have been esta
 
 ---
 
-## Demo Account Credentials
+## Local Demo Accounts
 
-These credentials are for local development and demonstrations only. Both demo passwords are configured in `.env.example` and must match the values used in your local `.env`.
-
-| Account type | Email | Password |
-| --- | --- | --- |
-| Administrator | `admin@footprint.org` | `FootprintIQ-Demo-2026!` |
-| Investigator | `investigator@footprint.org` | `FootprintIQ-Demo-2026!` |
+Demo account provisioning is disabled by default. For an isolated local demo, supply unique passwords through untracked environment configuration and explicitly enable provisioning. Do not reuse credentials published in older repository revisions. If they were used anywhere else, rotate them.
 
 ### Administrator account
 
-- When `DEMO_ACCOUNTS_ENABLED=true`, the administrator account is created on first app startup or by `python scripts/provision_demo_accounts.py`.
+- When `DEMO_ACCOUNTS_ENABLED=true` in development, the administrator account is created on first app startup or by `python scripts/provision_demo_accounts.py`.
 - Provisioning is repeatable and does not reset or modify existing accounts or passwords.
 - Sign in at `http://127.0.0.1:8000/login`. Administrators can manage users, access the admin dashboard and audit log, and approve or reject investigator registrations at **Approvals**.
 
 ### Investigator account and registration
 
-- The pre-created investigator demo account is active immediately and has investigator permissions.
+- When configured, the investigator demo account is active immediately and has investigator permissions.
 - New users can register from the sign-in page. New registrations are assigned the investigator role and remain pending; they cannot sign in until an administrator approves them.
 - Investigators can use authorized investigation, reconnaissance, scan, evidence, and report features. Active scan authorization remains subject to existing target authorization controls.
 
@@ -158,7 +153,6 @@ These credentials are for local development and demonstrations only. Both demo p
 - `.env.example` includes `DEMO_ACCOUNTS_ENABLED`, `DEMO_ADMIN_USERNAME`, `DEMO_ADMIN_EMAIL`, `DEMO_ADMIN_PASSWORD`, `DEMO_INVESTIGATOR_USERNAME`, `DEMO_INVESTIGATOR_EMAIL`, and `DEMO_INVESTIGATOR_PASSWORD`.
 - The application defaults demo provisioning to disabled. Production settings reject enabling it.
 - Demo credentials must never be used in production. Production administrators must use separately configured credentials and a strong secret-managed password. Never commit production credentials, secrets, or production `.env` files.
-- The password above is a public local demo credential, not a production secret.
 
 ## 3. Safe Administrator Provisioning
 

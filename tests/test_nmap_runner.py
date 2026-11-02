@@ -18,6 +18,7 @@ from app.models.scan import ActiveScanJobModel, ScanFindingHostModel, ScanFindin
 from app.models.user import UserModel
 from app.services.active.profiles import get_scan_profile
 from app.services.active.runner import NmapRunner, NmapExecutionError
+from app.services.evidence_store import EvidenceStore
 
 SAMPLE_XML_OUTPUT = """<?xml version="1.0" encoding="UTF-8"?>
 <nmaprun scanner="nmap" args="nmap -sT -T3 --top-ports 100 -Pn 127.0.0.1" version="7.98">
@@ -211,6 +212,8 @@ def test_target_out_of_scope(db_session: Session, active_scan_investigation, moc
 
 @pytest.mark.asyncio
 async def test_successful_scan_execution_and_persistence(db_session: Session, active_scan_investigation, mock_admin_user):
+    db_session.add(mock_admin_user)
+    db_session.commit()
     """Verify end-to-end execution flow with mocked subprocess, writing XML and persisting findings."""
     now = datetime.now(timezone.utc)
     authz = TargetAuthorizationModel(
@@ -311,6 +314,8 @@ async def test_successful_scan_execution_and_persistence(db_session: Session, ac
 @pytest.mark.asyncio
 async def test_scan_execution_timeout(db_session: Session, active_scan_investigation, mock_admin_user):
     """Verify scan runner marks job as TIMED_OUT when subprocess exceeds timeout."""
+    db_session.add(mock_admin_user)
+    db_session.commit()
     now = datetime.now(timezone.utc)
     authz = TargetAuthorizationModel(
         id=f"authz-{uuid.uuid4().hex[:8]}",
@@ -363,6 +368,78 @@ async def test_scan_execution_timeout(db_session: Session, active_scan_investiga
     assert job.status == "TIMED_OUT"
     assert job.error_category == "TIMEOUT"
     mock_proc.kill.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_execution_rechecks_revoked_authorization_before_subprocess(db_session, active_scan_investigation, mock_admin_user):
+    db_session.add(mock_admin_user)
+    now = datetime.now(timezone.utc)
+    authz = TargetAuthorizationModel(
+        id=f"authz-recheck-{uuid.uuid4().hex[:8]}", investigation_id=active_scan_investigation.id,
+        target="127.0.0.1", target_type="IP", allowed_operations=["SCAN_ACTIVE"],
+        authorization_reference="AUTH-RECHECK", approved_by="SecurityLead",
+        valid_from=now - timedelta(minutes=1), valid_to=now + timedelta(hours=1), is_revoked=False,
+    )
+    db_session.add(authz)
+    db_session.commit()
+    runner = NmapRunner()
+    job = await runner.create_scan_job(db_session, active_scan_investigation, "127.0.0.1", "basic_tcp", mock_admin_user)
+    authz.is_revoked = True
+    db_session.commit()
+
+    class MockDbFactory:
+        def __enter__(self): return db_session
+        def __exit__(self, *args): pass
+
+    with patch("app.services.active.runner.get_nmap_detector") as detector, \
+         patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as create_process:
+        detector.return_value.resolve_binary_path.return_value = "nmap"
+        await runner.execute_scan(MockDbFactory, job.id)
+    db_session.refresh(job)
+    assert job.status == "FAILED"
+    assert job.error_category == "AUTHORIZATION_REVOKED"
+    create_process.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.environ.get("RUN_LOCALHOST_NMAP") != "1", reason="Opt-in real loopback Nmap integration test")
+async def test_live_nmap_scan_is_confined_to_authorized_loopback(db_session, active_scan_investigation, mock_admin_user, tmp_path):
+    """Real Nmap execution is limited to the expressly authorized 127.0.0.1 target."""
+    db_session.add(mock_admin_user)
+    now = datetime.now(timezone.utc)
+    db_session.add(TargetAuthorizationModel(
+        id=f"authz-live-{uuid.uuid4().hex[:8]}", investigation_id=active_scan_investigation.id,
+        target="127.0.0.1", target_type="IP", allowed_operations=["SCAN_ACTIVE"],
+        authorization_reference="LOCALHOST-TEST-ONLY", approved_by="test administrator",
+        valid_from=now - timedelta(minutes=1), valid_to=now + timedelta(hours=1), is_revoked=False,
+    ))
+    db_session.commit()
+    runner = NmapRunner()
+    job = await runner.create_scan_job(
+        db=db_session, investigation=active_scan_investigation, target="127.0.0.1",
+        profile_id="basic_tcp", actor_user=mock_admin_user,
+    )
+
+    class IsolatedSession:
+        def __enter__(self): return db_session
+        def __exit__(self, *args): pass
+
+    with patch("app.services.active.runner.EvidenceStore", return_value=EvidenceStore(str(tmp_path / "evidence"))):
+        await runner.execute_scan(IsolatedSession, job.id)
+    db_session.refresh(job)
+    assert job.status in {"COMPLETED", "PARTIAL"}
+    assert job.evidence_id
+    assert db_session.query(ScanFindingHostModel).filter_by(job_id=job.id, address="127.0.0.1").count() == 1
+
+    service_job = await runner.create_scan_job(
+        db=db_session, investigation=active_scan_investigation, target="127.0.0.1",
+        profile_id="service_inventory", actor_user=mock_admin_user,
+    )
+    with patch("app.services.active.runner.EvidenceStore", return_value=EvidenceStore(str(tmp_path / "evidence"))):
+        await runner.execute_scan(IsolatedSession, service_job.id)
+    db_session.refresh(service_job)
+    assert service_job.status in {"COMPLETED", "PARTIAL"}
+    assert service_job.evidence_id
 
 
 @pytest.mark.asyncio

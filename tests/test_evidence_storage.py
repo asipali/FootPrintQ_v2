@@ -53,3 +53,15 @@ def test_evidence_store_missing_file_raises_not_found(tmp_path):
     store = EvidenceStore(base_path=str(tmp_path))
     with pytest.raises(FileNotFoundError):
         store.read_evidence("inv-test/non_existent.raw.txt")
+
+
+def test_evidence_store_does_not_overwrite_reused_identifier(tmp_path):
+    store = EvidenceStore(base_path=str(tmp_path))
+    rel_path, original_hash, _ = store.store_evidence("inv-safe", "same-id", "DNS", "original")
+
+    with pytest.raises(FileExistsError):
+        store.store_evidence("inv-safe", "same-id", "DNS", "replacement")
+
+    data, stored_hash = store.read_evidence(rel_path)
+    assert data == b"original"
+    assert stored_hash == original_hash

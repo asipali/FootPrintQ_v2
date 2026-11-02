@@ -36,6 +36,7 @@ def test_dashboard_displays_investigations_when_present(client: TestClient, db_s
         organization_name="NorthStar Analytics Lab",
         description="Authorized lab reconnaissance baseline.",
         lead_investigator="Asip Ali",
+        owner_user_id=analyst_user.id,
         team_members=["Mohan Prasad"],
         status="active",
         owned_domains=["lab.example"],

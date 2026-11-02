@@ -150,10 +150,10 @@
       <div class="grid-2">
         <div class="form-group">
           <label class="form-label">Lead Investigator *</label>
-          <input type="text" name="lead_investigator" required class="form-control" value="{{ current_user.username if current_user else 'Lead Analyst' }}">
+          <input type="text" name="lead_investigator" required class="form-control" value="{{ (current_user.full_name or current_user.username) if current_user else 'Lead Analyst' }}" readonly>
         </div>
         <div class="form-group">
-          <label class="form-label">Authorization Ticket Ref</label>
+          <label class="form-label">Campaign Reference (descriptive only; target permissions require a separate authorization)</label>
           <input type="text" name="authorization_reference" class="form-control" placeholder="e.g. TICKET-SEC-2026-001">
         </div>
       </div>

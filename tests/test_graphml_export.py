@@ -188,6 +188,7 @@ def test_web_graphml_download_success(authenticated_client: TestClient, db_sessi
         description="Web GraphML download testing",
         owned_domains=["webgml.example"],
         lead_investigator="Analyst",
+        owner_user_id="usr-test-analyst-01",
         created_at=datetime.now(timezone.utc),
     )
     db_session.add(inv)
@@ -229,6 +230,7 @@ def test_api_graphml_download_authorized(client: TestClient, db_session: Session
         is_active=True,
     )
     db_session.add(user)
+    db_session.flush()
 
     inv = InvestigationModel(
         id="inv-api-gml-auth",
@@ -237,6 +239,7 @@ def test_api_graphml_download_authorized(client: TestClient, db_session: Session
         description="API GraphML Auth testing",
         owned_domains=["authgml.example"],
         lead_investigator="Analyst",
+        owner_user_id=user.id,
         created_at=datetime.now(timezone.utc),
     )
     db_session.add(inv)

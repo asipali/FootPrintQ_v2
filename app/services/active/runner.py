@@ -20,6 +20,7 @@ from app.core.auth import log_audit_event
 from app.models.investigation import InvestigationModel
 from app.models.recon import EvidenceModel, EntityModel, utc_now, ensure_utc
 from app.models.scan import ActiveScanJobModel, ScanFindingHostModel, ScanFindingPortModel
+from app.models.user import UserModel
 from app.services.active.nmap_detector import get_nmap_detector
 from app.services.active.profiles import ScanProfile, get_scan_profile
 from app.services.active.xml_parser import parse_nmap_xml, NmapXmlParseError, ParsedNmapResult
@@ -273,6 +274,34 @@ class NmapRunner:
                             j.cancellation_reason = reason
                             j.completed_at = utc_now()
                             db.commit()
+                    return
+
+            # Dispatch-time authorization can expire or be revoked while the job
+            # waits in memory. Recheck owner, actor, scope, operation and window
+            # immediately before starting the Nmap subprocess.
+            with db_factory() as auth_db:
+                current_job = auth_db.get(ActiveScanJobModel, job_id)
+                investigation = auth_db.get(InvestigationModel, investigation_id)
+                actor = auth_db.get(UserModel, requested_by)
+                if not current_job or not investigation or not actor or not actor.is_active or actor.account_status != "active":
+                    allowed, reason = False, "Investigation or active requesting user is unavailable."
+                elif not investigation.active_scanning_enabled:
+                    allowed, reason = False, "Active scanning is no longer enabled for this investigation."
+                else:
+                    allowed, reason, _ = self.resolve_and_revalidate_target(
+                        auth_db, investigation, target, profile, actor, client_ip, request_id
+                    )
+                if not allowed:
+                    current_job.status = "FAILED"
+                    current_job.error_category = "AUTHORIZATION_REVOKED"
+                    current_job.error_message = reason
+                    current_job.completed_at = utc_now()
+                    auth_db.commit()
+                    log_audit_event(
+                        db=auth_db, event_type="SCAN_ACTIVE_DENIED", outcome="FAILURE",
+                        actor_id=requested_by, request_id=request_id, ip_address=client_ip,
+                        details={"job_id": job_id, "reason": reason},
+                    )
                     return
 
             proc: Optional[asyncio.subprocess.Process] = None

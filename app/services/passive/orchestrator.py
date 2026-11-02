@@ -1,6 +1,7 @@
 """Passive reconnaissance orchestration engine coordinating collectors, evidence persistence, and normalization."""
 
 import asyncio
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
@@ -21,6 +22,8 @@ from app.services.collectors.dns_collector import DNSCollector
 from app.services.collectors.crtsh import CertificateTransparencyCollector
 from app.services.collectors.theharvester import TheHarvesterCollector
 from app.services.collectors.search_collector import PublicSearchCollector
+
+logger = logging.getLogger("footprintiq.services.passive.orchestrator")
 
 
 def utc_now() -> datetime:
@@ -94,9 +97,13 @@ class PassiveReconOrchestrator:
         # 4. Filter collectors to run
         available_collectors = self._get_registered_collectors()
         if requested_collectors:
-            selected_collectors = {
-                k: v for k, v in available_collectors.items() if k.lower() in [c.lower() for c in requested_collectors]
-            }
+            requested = [collector.strip().lower() for collector in requested_collectors]
+            unknown = sorted(set(requested) - set(available_collectors))
+            if unknown:
+                raise ValueError(f"Unsupported passive reconnaissance collector(s): {', '.join(unknown)}")
+            if len(set(requested)) != len(requested):
+                raise ValueError("Duplicate collector names are not allowed.")
+            selected_collectors = {key: available_collectors[key] for key in requested}
         else:
             selected_collectors = available_collectors
 
@@ -174,8 +181,12 @@ class PassiveReconOrchestrator:
                         content=coll_result.raw_content,
                     )
                 except Exception as store_err:
-                    job.error_message = f"Evidence persistence error: {store_err}"
-                    rel_path, sha_hash, size_bytes = None, "storage_failure", 0
+                    logger.exception("Could not persist evidence for collection job %s", job.id)
+                    job.status = "FAILED"
+                    job.error_category = "EVIDENCE_STORAGE_FAILED"
+                    job.error_message = "Evidence could not be persisted; collector findings were not ingested."
+                    self.db.commit()
+                    continue
 
                 evidence_model = EvidenceModel(
                     id=evidence_id,

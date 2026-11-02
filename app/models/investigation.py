@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 from typing import List, Optional
-from sqlalchemy import Boolean, DateTime, JSON, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
 
@@ -23,6 +23,10 @@ class InvestigationModel(Base):
     organization_name: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     lead_investigator: Mapped[str] = mapped_column(String(128), nullable=False)
+    # Nullable for pre-0007 records; new investigations always record their creator.
+    owner_user_id: Mapped[Optional[str]] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     team_members: Mapped[List[str]] = mapped_column(JSON, default=list, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="active", nullable=False, index=True)
 
@@ -49,6 +53,7 @@ class InvestigationModel(Base):
             "organization_name": self.organization_name,
             "description": self.description,
             "lead_investigator": self.lead_investigator,
+            "owner_user_id": self.owner_user_id,
             "team_members": self.team_members or [],
             "status": self.status,
             "scope": {

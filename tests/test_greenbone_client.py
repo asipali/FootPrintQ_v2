@@ -156,3 +156,33 @@ def test_vulnerability_profiles_validation():
 
     with pytest.raises(ValueError, match="Unknown vulnerability scan profile"):
         validate_vuln_profile("non_existent_profile")
+
+
+def test_greenbone_verified_tls_connection_checks_chain_and_hostname():
+    client = GreenboneClient(host="gvm.lab", username="scanner", password="secret", tls_verify=True)
+    raw_socket = MagicMock()
+    tls_socket = MagicMock()
+    tls_context = MagicMock()
+    tls_context.wrap_socket.return_value = tls_socket
+    with patch("app.integrations.greenbone_client.socket.socket", return_value=raw_socket), \
+         patch("app.integrations.greenbone_client.ssl.create_default_context", return_value=tls_context) as create_context:
+        connection = client.get_connection()
+        actual = connection._new_socket()
+    create_context.assert_called_once_with(cafile=None)
+    tls_context.wrap_socket.assert_called_once_with(raw_socket, server_hostname="gvm.lab")
+    tls_socket.settimeout.assert_called_once()
+    assert actual is tls_socket
+
+
+def test_greenbone_task_status_reads_last_report_id():
+    client = GreenboneClient(host="gvm.lab", username="scanner", password="secret")
+    gmp = MagicMock()
+    gmp.get_tasks.return_value = (
+        '<get_tasks_response><task id="task-1"><status>Done</status><progress>100</progress>'
+        '<last_report><report id="report-1"/></last_report></task></get_tasks_response>'
+    )
+    with patch.object(client, "_open_session", return_value=gmp):
+        result = client.get_task_status("task-1")
+    assert result["status"] == "Done"
+    assert result["progress"] == 100
+    assert result["report_id"] == "report-1"

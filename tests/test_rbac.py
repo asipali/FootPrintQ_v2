@@ -126,6 +126,7 @@ def test_viewer_can_read_investigations(
         organization_name="Target Corp",
         description="Publicly visible inside team",
         lead_investigator="Lead",
+        owner_user_id="usr-test-viewer-01",
         team_members=[],
         status="active",
         owned_domains=["target.example"],

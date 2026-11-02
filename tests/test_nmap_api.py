@@ -1,6 +1,7 @@
 """Integration tests for Nmap REST API endpoints and RBAC enforcement."""
 
 import uuid
+import hashlib
 from datetime import datetime, timezone, timedelta
 from unittest.mock import patch, MagicMock
 from sqlalchemy.orm import Session
@@ -8,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models.investigation import InvestigationModel
 from app.models.recon import TargetAuthorizationModel, EvidenceModel
 from app.models.scan import ActiveScanJobModel, ScanFindingHostModel, ScanFindingPortModel
+from app.models.recon import EvidenceModel
 from app.services.active.runner import NmapRunner
 
 
@@ -162,7 +164,7 @@ def test_dispatch_scan_successful(client, admin_headers, db_session: Session):
         mock_task.assert_called_once()
 
 
-def test_list_and_get_scan_job(client, viewer_headers, db_session: Session):
+def test_list_and_get_scan_job(client, viewer_headers, analyst_headers, db_session: Session):
     """Viewer can list and retrieve scan job metadata."""
     inv = InvestigationModel(
         id=f"inv-list-{uuid.uuid4().hex[:8]}",
@@ -170,6 +172,7 @@ def test_list_and_get_scan_job(client, viewer_headers, db_session: Session):
         description="Test campaign description",
         organization_name="Test Org",
         lead_investigator="Viewer",
+        owner_user_id="usr-test-viewer-01",
         status="active",
     )
     db_session.add(inv)
@@ -196,9 +199,10 @@ def test_list_and_get_scan_job(client, viewer_headers, db_session: Session):
     get_resp = client.get(f"/api/v1/nmap-scans/{job.id}", headers=viewer_headers)
     assert get_resp.status_code == 200
     assert get_resp.json()["id"] == job.id
+    assert client.get(f"/api/v1/nmap-scans/{job.id}", headers=analyst_headers).status_code == 404
 
 
-def test_get_scan_results(client, viewer_headers, db_session: Session):
+def test_get_scan_results(client, viewer_headers, analyst_headers, db_session: Session):
     """Retrieve normalized findings (hosts and ports) for a completed scan."""
     inv = InvestigationModel(
         id=f"inv-res-{uuid.uuid4().hex[:8]}",
@@ -206,6 +210,7 @@ def test_get_scan_results(client, viewer_headers, db_session: Session):
         description="Test campaign description",
         organization_name="Test Org",
         lead_investigator="Viewer",
+        owner_user_id="usr-test-viewer-01",
         status="active",
     )
     db_session.add(inv)
@@ -252,6 +257,38 @@ def test_get_scan_results(client, viewer_headers, db_session: Session):
     assert data["total_ports"] == 1
     assert data["hosts"][0]["address"] == "127.0.0.1"
     assert data["hosts"][0]["ports"][0]["port_number"] == 80
+    assert client.get(f"/api/v1/nmap-scans/{job.id}/results", headers=analyst_headers).status_code == 404
+
+
+def test_download_scan_xml_uses_evidence_store_integrity_reader(client, viewer_headers, db_session: Session):
+    now = datetime.now(timezone.utc)
+    inv = InvestigationModel(
+        id=f"inv-xml-{uuid.uuid4().hex[:8]}", name="XML Evidence Campaign",
+        description="Test scan evidence", organization_name="Test Org", lead_investigator="Viewer",
+        owner_user_id="usr-test-viewer-01", status="active",
+    )
+    xml = b"<nmaprun />"
+    digest = hashlib.sha256(xml).hexdigest()
+    evidence = EvidenceModel(
+        id=f"evi-xml-{uuid.uuid4().hex[:8]}", investigation_id=inv.id,
+        source_type="NMAP", source_name="Nmap test", target="127.0.0.1",
+        collection_status="SUCCESS", raw_content_path="test/scan.xml", content_hash=digest,
+        content_size_bytes=len(xml),
+    )
+    job = ActiveScanJobModel(
+        id=f"scan-xml-{uuid.uuid4().hex[:8]}", investigation_id=inv.id,
+        requested_by="usr-test-viewer-01", target="127.0.0.1", resolved_ips=["127.0.0.1"],
+        scan_profile="basic_tcp", status="COMPLETED", started_at=now, evidence_id=evidence.id,
+    )
+    db_session.add_all([inv, evidence, job])
+    db_session.commit()
+    store = MagicMock()
+    store.read_evidence.return_value = (xml, digest)
+    with patch("app.api.nmap_scans.get_evidence_store", return_value=store):
+        response = client.get(f"/api/v1/nmap-scans/{job.id}/xml", headers=viewer_headers)
+    assert response.status_code == 200
+    assert response.content == xml
+    assert response.headers["X-Evidence-Integrity"] == "VERIFIED"
 
 
 def test_cancel_scan_job_api(client, admin_headers, db_session: Session):

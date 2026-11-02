@@ -26,6 +26,7 @@ from app.services.target_authorization import (
     is_target_in_investigation_scope,
     classify_target,
 )
+from app.services.investigation_access import require_investigation_access
 
 router = APIRouter(prefix="/api/v1/investigations/{investigation_id}", tags=["Passive Reconnaissance"])
 
@@ -52,6 +53,7 @@ async def trigger_passive_recon(
         investigation_id=investigation_id,
         actor_user=current_user,
     )
+    require_investigation_access(db.get(InvestigationModel, investigation_id), current_user)
 
     try:
         result = await orchestrator.run(
@@ -92,11 +94,10 @@ def validate_target(
 ):
     """Validates target classification, scope membership, and authorization validity."""
     investigation = db.get(InvestigationModel, investigation_id)
-    if not investigation:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Investigation not found")
+    investigation = require_investigation_access(investigation, current_user)
 
     target_type = classify_target(payload.target)
-    in_scope = is_target_in_investigation_scope(investigation, payload.target)
+    in_scope, _ = is_target_in_investigation_scope(investigation, payload.target)
     client_ip = request.client.host if request.client else None
     req_id = getattr(request.state, "request_id", None)
 
@@ -113,9 +114,10 @@ def validate_target(
     return TargetValidationResponse(
         target=payload.target,
         target_type=target_type,
-        in_scope=in_scope,
+        is_valid_syntax=target_type != "UNKNOWN",
+        is_in_investigation_scope=in_scope,
         is_authorized=is_authorized,
-        reason=reason,
+        message=reason,
     )
 
 
@@ -131,8 +133,7 @@ def list_collection_jobs(
 ):
     """Returns all collection jobs associated with an investigation."""
     investigation = db.get(InvestigationModel, investigation_id)
-    if not investigation:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Investigation not found")
+    investigation = require_investigation_access(investigation, current_user)
 
     stmt = (
         select(CollectionJobModel)
@@ -156,8 +157,7 @@ def list_entities(
 ):
     """Returns normalized deduplicated OSINT entities for the investigation."""
     investigation = db.get(InvestigationModel, investigation_id)
-    if not investigation:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Investigation not found")
+    investigation = require_investigation_access(investigation, current_user)
 
     stmt = select(EntityModel).where(EntityModel.investigation_id == investigation_id)
     if entity_type:
@@ -180,8 +180,7 @@ def list_evidence(
 ):
     """Returns evidence records for an investigation."""
     investigation = db.get(InvestigationModel, investigation_id)
-    if not investigation:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Investigation not found")
+    investigation = require_investigation_access(investigation, current_user)
 
     stmt = (
         select(EvidenceModel)
@@ -206,6 +205,7 @@ def get_raw_evidence(
     evidence = db.get(EvidenceModel, evidence_id)
     if not evidence or evidence.investigation_id != investigation_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence record not found")
+    require_investigation_access(db.get(InvestigationModel, investigation_id), current_user)
 
     if not evidence.raw_content_path:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No raw content stored for this evidence")
@@ -215,8 +215,11 @@ def get_raw_evidence(
         content_bytes, computed_hash = store.read_evidence(evidence.raw_content_path)
     except FileNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence file missing on server")
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error reading evidence: {exc}")
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Evidence could not be read or verified.")
+
+    if computed_hash != evidence.content_hash:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Evidence integrity check failed.")
 
     # Determine media type
     if evidence.raw_content_path.endswith(".json"):
@@ -232,6 +235,6 @@ def get_raw_evidence(
         headers={
             "X-Content-SHA256": evidence.content_hash,
             "X-Computed-SHA256": computed_hash,
-            "X-Evidence-Integrity": "VERIFIED" if computed_hash == evidence.content_hash else "CORRUPTED",
+            "X-Evidence-Integrity": "VERIFIED",
         },
     )

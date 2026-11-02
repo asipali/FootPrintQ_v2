@@ -6,7 +6,7 @@
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem;">
   <div>
     <h2 style="font-size: 1.25rem; font-weight: 700; color: var(--text-primary);">Forensic Evidence Ledger</h2>
-    <p style="font-size: 0.8rem; color: var(--text-muted);">Cryptographically sealed, immutable raw reconnaissance and vulnerability evidence records with SHA-256 digests.</p>
+    <p style="font-size: 0.8rem; color: var(--text-muted);">Raw reconnaissance and assessment evidence records with stored SHA-256 digests. Integrity is checked when evidence is retrieved.</p>
   </div>
 </div>
 
@@ -25,6 +25,7 @@
           <th>Collector / Tool</th>
           <th>Target</th>
           <th>Size</th>
+          <th>Status</th>
           <th>Cryptographic SHA-256 Digest</th>
           <th>Investigation</th>
           <th>Captured</th>
@@ -38,6 +39,7 @@
           <td>{{ ev.source_name }}</td>
           <td class="mono" style="font-size: 0.78rem;">{{ ev.target }}</td>
           <td class="mono" style="font-size: 0.75rem;">{{ ev.content_size_bytes }} B</td>
+          <td><span class="badge badge-muted">{{ ev.collection_status }}</span></td>
           <td class="mono" style="font-size: 0.72rem; color: var(--text-secondary); max-width: 200px; word-break: break-all;">
             {{ ev.content_hash }}
           </td>

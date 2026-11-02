@@ -148,6 +148,10 @@ class Settings(BaseSettings):
         default=True,
         description="Enforce TLS certificate verification when connecting to Greenbone over TLS"
     )
+    GVM_CA_FILE: Optional[str] = Field(
+        default=None,
+        description="Optional CA bundle path used to verify the Greenbone GMP TLS certificate"
+    )
 
     @field_validator("DATABASE_URL")
     @classmethod
@@ -180,8 +184,8 @@ class Settings(BaseSettings):
     @classmethod
     def validate_production_secret(cls, v: str, info):
         env = info.data.get("APP_ENV")
-        if env == "production":
-            if not v or "dev-insecure" in v or len(v) < 32:
+        if env in {"staging", "production"}:
+            if not v or "dev-insecure" in v or len(v) < 32 or len(set(v)) < 16:
                 raise ValueError(
                     "CRITICAL: Production deployment requires a secure, high-entropy SECRET_KEY (min 32 chars). "
                     "Generate via: python -c \"import secrets; print(secrets.token_hex(32))\""
@@ -192,14 +196,22 @@ class Settings(BaseSettings):
     @classmethod
     def validate_production_debug(cls, v: bool, info):
         env = info.data.get("APP_ENV")
-        if env == "production" and v is True:
-            raise ValueError("CRITICAL: DEBUG mode must be disabled (False) in production environments.")
+        if env in {"staging", "production"} and v is True:
+            raise ValueError("CRITICAL: DEBUG mode must be disabled (False) in staging and production environments.")
         return v
 
     @model_validator(mode="after")
     def validate_demo_provisioning(self):
-        if self.APP_ENV == "production" and self.DEMO_ACCOUNTS_ENABLED:
-            raise ValueError("Demo account provisioning cannot be enabled in production.")
+        if self.APP_ENV in {"staging", "production"} and self.DEMO_ACCOUNTS_ENABLED:
+            raise ValueError("Demo account provisioning cannot be enabled in production or staging.")
+        if self.APP_ENV in {"staging", "production"} and self.SESSION_COOKIE_SECURE is False:
+            raise ValueError("Secure session cookies are required in staging and production.")
+        if self.SESSION_COOKIE_SAMESITE == "none" and self.SESSION_COOKIE_SECURE is False:
+            raise ValueError("SameSite=None cookies require SESSION_COOKIE_SECURE=True.")
+        if self.APP_ENV in {"staging", "production"} and not self.ALLOWED_HOSTS:
+            raise ValueError("ALLOWED_HOSTS must be configured in staging and production.")
+        if self.APP_ENV in {"staging", "production"} and "*" in self.ALLOWED_HOSTS:
+            raise ValueError("Wildcard ALLOWED_HOSTS is not permitted in staging or production.")
         if self.DEMO_ACCOUNTS_ENABLED and (
             not self.DEMO_ADMIN_PASSWORD or not self.DEMO_INVESTIGATOR_PASSWORD
         ):
@@ -227,7 +239,7 @@ class Settings(BaseSettings):
         """Determines if cookies should be sent with Secure flag."""
         if self.SESSION_COOKIE_SECURE is not None:
             return self.SESSION_COOKIE_SECURE
-        return self.is_production
+        return self.APP_ENV in {"staging", "production"}
 
     def __repr__(self) -> str:
         """Sanitized representation to prevent leaking secrets in logging."""

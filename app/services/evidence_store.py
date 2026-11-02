@@ -68,12 +68,18 @@ class EvidenceStore:
         if not file_path.is_relative_to(inv_dir):
             raise ValueError("Path traversal detected in evidence filename construction.")
 
+        # Evidence identifiers are immutable storage keys. Never silently replace
+        # prior bytes if a caller accidentally reuses one.
+        if file_path.exists():
+            raise FileExistsError("Evidence storage key already exists.")
+
         # Compute SHA-256 hash
         content_hash = hashlib.sha256(encoded_bytes).hexdigest()
         content_size = len(encoded_bytes)
 
         # Write to disk
-        file_path.write_bytes(encoded_bytes)
+        with file_path.open("xb") as evidence_file:
+            evidence_file.write(encoded_bytes)
 
         # Return relative path for database storage (no absolute server paths exposed)
         rel_path = file_path.relative_to(self.base_dir).as_posix()

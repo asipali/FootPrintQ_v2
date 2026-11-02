@@ -50,13 +50,16 @@ class TargetAuthorizationModel(Base):
         valid_from_utc = ensure_utc(self.valid_from)
         if now < valid_from_utc:
             return False, f"Target authorization not yet active (valid from {valid_from_utc.isoformat()})."
-        if now > valid_to_utc:
+        if now >= valid_to_utc:
             return False, f"Target authorization expired on {valid_to_utc.isoformat()}."
-        allowed = self.allowed_operations or []
-        op_set = {operation}
-        if operation in ("SCAN_VULN", "SCAN_VULNERABILITY"):
-            op_set.update({"SCAN_VULN", "SCAN_VULNERABILITY"})
-        if not any(op in allowed for op in op_set):
+        aliases = {
+            "PASSIVE_RECON": "RECON_PASSIVE",
+            "SCAN_PORTS": "SCAN_ACTIVE",
+            "SCAN_VULNERABILITY": "SCAN_VULN",
+        }
+        requested = aliases.get(operation, operation)
+        allowed = {aliases.get(op, op) for op in (self.allowed_operations or [])}
+        if requested not in allowed:
             return False, f"Operation '{operation}' not permitted by authorization record."
         return True, "Authorization valid."
 

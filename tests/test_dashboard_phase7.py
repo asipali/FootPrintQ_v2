@@ -27,6 +27,7 @@ def test_dashboard_metrics_and_status(authenticated_client: TestClient, db_sessi
         organization_name="NorthStar",
         description="Dashboard test campaign.",
         lead_investigator="Lead Analyst",
+        owner_user_id=analyst_user.id,
         status="active",
         owned_domains=["lab.example"],
     )
@@ -51,6 +52,7 @@ def test_investigations_page_filtering(authenticated_client: TestClient, db_sess
         organization_name="Alpha Corp",
         description="First campaign.",
         lead_investigator="Alice",
+        owner_user_id="usr-test-analyst-01",
         status="active",
     )
     inv2 = InvestigationModel(
@@ -59,6 +61,7 @@ def test_investigations_page_filtering(authenticated_client: TestClient, db_sess
         organization_name="Beta Corp",
         description="Second campaign.",
         lead_investigator="Bob",
+        owner_user_id="usr-test-analyst-01",
         status="completed",
     )
     db_session.add_all([inv1, inv2])
@@ -136,6 +139,7 @@ def test_investigation_detail_workspace_renders(authenticated_client: TestClient
         organization_name="Test Org",
         description="Testing all tabs and components.",
         lead_investigator="Lead Analyst",
+        owner_user_id="usr-test-analyst-01",
         status="active",
         owned_domains=["test.example"],
         active_targets=["10.0.0.5"],
@@ -190,7 +194,7 @@ def test_investigation_detail_workspace_renders(authenticated_client: TestClient
     assert "Download PDF Dossier" in html
 
 
-def test_findings_page_matrix(authenticated_client: TestClient, db_session: Session):
+def test_findings_page_matrix(authenticated_client: TestClient, db_session: Session, analyst_user):
     """Verify unified findings matrix page filters by severity."""
     inv = InvestigationModel(
         id="inv-findings-01",
@@ -198,6 +202,7 @@ def test_findings_page_matrix(authenticated_client: TestClient, db_session: Sess
         organization_name="Findings Org",
         description="Findings matrix testing.",
         lead_investigator="Analyst",
+        owner_user_id=analyst_user.id,
         status="active",
     )
     db_session.add(inv)
@@ -247,7 +252,7 @@ def test_findings_page_matrix(authenticated_client: TestClient, db_session: Sess
     assert "ICMP Timestamp Disclosure" not in res_crit.text
 
 
-def test_scans_monitor_page(authenticated_client: TestClient, db_session: Session):
+def test_scans_monitor_page(authenticated_client: TestClient, db_session: Session, analyst_user):
     """Verify scans monitor lists passive, active, and vulnerability jobs."""
     inv = InvestigationModel(
         id="inv-scans-mon-01",
@@ -255,6 +260,7 @@ def test_scans_monitor_page(authenticated_client: TestClient, db_session: Sessio
         organization_name="Org",
         description="Job monitoring test.",
         lead_investigator="Lead",
+        owner_user_id=analyst_user.id,
         status="active",
     )
     db_session.add(inv)
@@ -280,7 +286,7 @@ def test_scans_monitor_page(authenticated_client: TestClient, db_session: Sessio
     assert "45%" in html
 
 
-def test_evidence_ledger_page(authenticated_client: TestClient, db_session: Session):
+def test_evidence_ledger_page(authenticated_client: TestClient, db_session: Session, analyst_user):
     """Verify forensic evidence page renders records with SHA-256 hashes."""
     inv = InvestigationModel(
         id="inv-ev-page-01",
@@ -288,6 +294,7 @@ def test_evidence_ledger_page(authenticated_client: TestClient, db_session: Sess
         organization_name="Org",
         description="Evidence page test.",
         lead_investigator="Lead",
+        owner_user_id=analyst_user.id,
         status="active",
     )
     db_session.add(inv)
