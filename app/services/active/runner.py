@@ -20,6 +20,7 @@ from app.core.auth import log_audit_event
 from app.models.investigation import InvestigationModel
 from app.models.recon import EvidenceModel, EntityModel, utc_now, ensure_utc
 from app.models.scan import ActiveScanJobModel, ScanFindingHostModel, ScanFindingPortModel
+from app.models.job import JobModel
 from app.models.user import UserModel
 from app.services.active.nmap_detector import get_nmap_detector
 from app.services.active.profiles import ScanProfile, get_scan_profile
@@ -317,6 +318,12 @@ class NmapRunner:
 
                 with db_factory() as db:
                     j = db.get(ActiveScanJobModel, job_id)
+                    durable_job = db.get(JobModel, job_id)
+                    if durable_job:
+                        durable_job.process_pid = proc.pid
+                        durable_job.status = "RUNNING"
+                        durable_job.started_at = utc_now()
+                        durable_job.progress = 25
                     if j:
                         log_audit_event(
                             db=db,
@@ -534,6 +541,13 @@ class NmapRunner:
                     )
 
                 j.status = "COMPLETED" if exit_code == 0 else "PARTIAL"
+                durable_job = db.get(JobModel, job_id)
+                if durable_job:
+                    durable_job.status = "COMPLETED"
+                    durable_job.progress = 100
+                    durable_job.evidence_id = evidence_id
+                    durable_job.completed_at = j.completed_at
+                    durable_job.duration_seconds = j.duration_seconds
                 db.commit()
 
                 log_audit_event(
@@ -675,6 +689,14 @@ class NmapRunner:
                     logger.warning("Error killing process for job %s: %s", job_id, exc)
 
         job = db.get(ActiveScanJobModel, job_id)
+        durable_job = db.get(JobModel, job_id)
+        if durable_job and durable_job.status in ("QUEUED", "RUNNING", "CLAIMED", "CANCEL_REQUESTED"):
+            durable_job.status = "CANCELLED"
+            durable_job.cancellation_requested = True
+            durable_job.cancellation_reason = reason
+            durable_job.completed_at = utc_now()
+            if durable_job.started_at:
+                durable_job.duration_seconds = (ensure_utc(durable_job.completed_at) - ensure_utc(durable_job.started_at)).total_seconds()
         if job and job.status in ("QUEUED", "RUNNING", "AUTHORIZING"):
             job.status = "CANCELLED"
             job.cancellation_reason = reason

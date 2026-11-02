@@ -17,6 +17,7 @@ from app.services.active.nmap_detector import get_nmap_detector
 from app.services.active.profiles import list_scan_profiles, get_scan_profile
 from app.services.active.runner import get_nmap_runner, NmapExecutionError
 from app.services.evidence_store import get_evidence_store
+from app.services.jobs.queue import get_job_queue
 from app.schemas.scan import (
     NmapStatusResponse,
     ScanProfileResponse,
@@ -103,6 +104,17 @@ async def dispatch_nmap_scan(
             actor_user=current_user,
             client_ip=client_ip,
             request_id=req_id,
+        )
+        get_job_queue().enqueue_job(
+            db=db,
+            investigation_id=investigation.id,
+            job_type="NMAP_SCAN",
+            operation="SCAN_ACTIVE",
+            target=payload.target,
+            requested_by=current_user.id,
+            parameters={"profile_id": payload.profile_id},
+            job_id=job.id,
+            prevent_duplicates=False,
         )
     except NmapExecutionError as exc:
         raise HTTPException(
@@ -208,6 +220,12 @@ async def cancel_scan_job(
         job_id=job_id,
         actor_id=current_user.id,
         reason=payload.reason or "User requested cancellation",
+    )
+    get_job_queue().request_cancellation(
+        db=db,
+        job_id=job_id,
+        reason=payload.reason or "User requested cancellation",
+        actor_id=current_user.id,
     )
     db.refresh(job)
     return ScanJobResponse(**job.to_dict())

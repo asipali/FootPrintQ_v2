@@ -83,6 +83,16 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning(f"Database startup probe warning: {msg}")
 
+    # Startup durable job recovery for interrupted tasks
+    try:
+        from app.services.jobs.recovery import get_job_recovery
+        recovery = get_job_recovery()
+        rec_summary = recovery.recover_stale_jobs(db_factory=SessionLocal)
+        if rec_summary.get("recovered_jobs", 0) > 0:
+            logger.info("Startup job recovery reconciled %s", rec_summary)
+    except Exception as rec_err:
+        logger.warning("Startup job recovery warning: %s", rec_err)
+
     if settings.DEMO_ACCOUNTS_ENABLED:
         db = SessionLocal()
         try:
