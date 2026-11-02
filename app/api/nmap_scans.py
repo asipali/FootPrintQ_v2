@@ -12,7 +12,7 @@ from app.models.recon import EvidenceModel
 from app.models.scan import ActiveScanJobModel, ScanFindingHostModel
 from app.models.user import UserModel
 from app.services.investigation_access import require_investigation_access
-from app.api.deps import get_current_user, require_permission
+from app.api.deps import get_current_user, require_permission, verify_csrf_token
 from app.services.active.nmap_detector import get_nmap_detector
 from app.services.active.profiles import list_scan_profiles, get_scan_profile
 from app.services.active.runner import get_nmap_runner, NmapExecutionError
@@ -72,6 +72,7 @@ async def dispatch_nmap_scan(
     payload: ScanJobCreate,
     request: Request,
     current_user: UserModel = Depends(require_permission("recon.active")),
+    csrf_ok: None = Depends(verify_csrf_token),
     db: Session = Depends(get_db),
 ) -> ScanJobResponse:
     """Dispatches a vetted Nmap scan against an explicitly authorized target."""
@@ -183,6 +184,7 @@ async def cancel_scan_job(
     job_id: str,
     payload: ScanCancelRequest,
     current_user: UserModel = Depends(require_permission("recon.active")),
+    csrf_ok: None = Depends(verify_csrf_token),
     db: Session = Depends(get_db),
 ) -> ScanJobResponse:
     """Terminates subprocess and marks scan job as cancelled."""

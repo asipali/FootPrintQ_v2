@@ -105,6 +105,7 @@ def create_user(
     payload: UserCreate,
     request: Request,
     admin: UserModel = Depends(require_role(ROLE_ADMINISTRATOR)),
+    csrf_ok: None = Depends(verify_csrf_token),
     db: Session = Depends(get_db),
 ):
     """Provisions a new user account. Restricted to Administrator."""
@@ -171,6 +172,7 @@ def update_user_role(
     payload: UserUpdateRole,
     request: Request,
     admin: UserModel = Depends(require_role(ROLE_ADMINISTRATOR)),
+    csrf_ok: None = Depends(verify_csrf_token),
     db: Session = Depends(get_db),
 ):
     """Updates user role. Restricted to Administrator."""
@@ -205,6 +207,7 @@ def update_user_status(
     payload: UserUpdateStatus,
     request: Request,
     admin: UserModel = Depends(require_role(ROLE_ADMINISTRATOR)),
+    csrf_ok: None = Depends(verify_csrf_token),
     db: Session = Depends(get_db),
 ):
     """Enables or disables user account and revokes active sessions if disabled."""

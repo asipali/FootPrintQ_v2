@@ -73,6 +73,11 @@ def test_bearer_token_api_requests_are_exempt_from_csrf(
     assert res.status_code == 200
 
 
+def test_safe_get_with_cookie_session_does_not_require_csrf(admin_client):
+    res = admin_client.get("/api/v1/investigations")
+    assert res.status_code == 200
+
+
 def test_account_lockout_after_maximum_failed_attempts(
     client: TestClient, db_session: Session, admin_user: UserModel
 ):

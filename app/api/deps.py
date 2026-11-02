@@ -7,9 +7,9 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.user import UserModel
+from app.models.user import UserModel, UserSessionModel
 from app.core.auth import get_user_by_session_token, log_audit_event
-from app.core.security import has_permission, VALID_ROLES
+from app.core.security import has_permission, VALID_ROLES, hash_session_token
 from app.config import get_settings
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -150,10 +150,22 @@ async def verify_csrf_token(
     if request.method in ("GET", "HEAD", "OPTIONS", "TRACE"):
         return
 
-    # Check if request is authenticated via Bearer token in header
+    # A Bearer header is not itself proof of a non-browser client. Exempt CSRF
+    # only when the token resolves to a valid active server-side session.
     auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer ") and len(auth_header) > 10:
-        return
+    if auth_header.startswith("Bearer "):
+        bearer_token = auth_header[7:].strip()
+        if bearer_token:
+            session = db.get(UserSessionModel, hash_session_token(bearer_token))
+            if (
+                session
+                and session.is_valid()
+                and session.user
+                and session.user.is_active
+                and session.user.account_status == "active"
+                and not session.user.is_locked()
+            ):
+                return
 
     # If authenticated via cookie, enforce CSRF
     settings = get_settings()
