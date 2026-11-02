@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 from typing import Optional, List
-from sqlalchemy import Boolean, DateTime, Integer, String, ForeignKey
+from sqlalchemy import Boolean, DateTime, Integer, String, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
@@ -25,6 +25,10 @@ class UserModel(Base):
     """User account model enforcing role-based access control and account lifecycle."""
 
     __tablename__ = "users"
+    __table_args__ = (
+        UniqueConstraint("username", name="uq_users_username"),
+        UniqueConstraint("email", name="uq_users_email"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
     username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)

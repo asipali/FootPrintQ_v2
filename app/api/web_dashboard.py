@@ -1,6 +1,7 @@
 """Web dashboard routes for FootprintIQ serving Jinja2 templates and HTMX components."""
 
 import os
+import asyncio
 import uuid
 import hmac
 from datetime import datetime, timezone, timedelta
@@ -15,9 +16,15 @@ from sqlalchemy import select, func, or_
 from urllib.parse import quote
 
 from app.config import get_settings
-from app.database import get_db, check_database_connection
+from app.database import get_db, check_database_connection, SessionLocal
 from app.models.investigation import InvestigationModel
 from app.models.user import UserModel
+from app.logging_config import get_logger
+from app.services.investigation_access import require_investigation_access
+from app.schemas.recon import TargetAuthorizationCreate
+from app.schemas.investigation import InvestigationCreate, ScopeSchema
+from app.services.target_authorization import is_target_in_investigation_scope, normalize_target
+from pydantic import ValidationError
 from app.models.recon import TargetAuthorizationModel, CollectionJobModel, EvidenceModel, EntityModel
 from app.models.scan import ActiveScanJobModel, ScanFindingPortModel, ScanFindingHostModel
 from app.models.vulnerability import VulnerabilityScanJobModel, VulnerabilityFindingModel
@@ -29,21 +36,22 @@ from app.core.auth import (
     log_audit_event,
     transition_investigator_account,
 )
-from app.core.security import ROLE_ADMINISTRATOR
+from app.core.security import ROLE_ADMINISTRATOR, has_permission
 from app.services.scoring.calculator import ExposureScorer
 from app.services.reporting.pdf_generator import InvestigationReportGenerator
 from app.services.reporting.graphml_generator import GraphMLExporter
 from app.services.active.nmap_detector import NmapDetector
 from app.integrations.greenbone_client import GreenboneClient
 from app.services.passive.orchestrator import PassiveReconOrchestrator
-from app.services.active.runner import NmapRunner
+from app.services.active.runner import get_nmap_runner, NmapExecutionError
 from app.services.active.profiles import get_scan_profile
-from app.services.vuln.orchestrator import get_vuln_orchestrator
+from app.services.vuln.orchestrator import get_vuln_orchestrator, VulnerabilityAssessmentError
 from app.services.vuln.profiles import get_vuln_profile
 
 import fastapi
 
 settings = get_settings()
+logger = get_logger("footprintiq.api.web_dashboard")
 TEMPLATES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
@@ -233,20 +241,26 @@ def render_dashboard(request: Request, db: Session = Depends(get_db)):
     ctx = _base_context(request, db=db, active_nav="dashboard")
 
     # Genuine counts from database
-    total_invs = db.scalar(select(func.count(InvestigationModel.id))) or 0
-    active_invs = db.scalar(select(func.count(InvestigationModel.id)).where(InvestigationModel.status == "active")) or 0
-    completed_invs = db.scalar(select(func.count(InvestigationModel.id)).where(InvestigationModel.status == "completed")) or 0
+    inv_filter = [] if current_user.role == ROLE_ADMINISTRATOR else [InvestigationModel.owner_user_id == current_user.id]
+    total_invs = db.scalar(select(func.count(InvestigationModel.id)).where(*inv_filter)) or 0
+    active_invs = db.scalar(select(func.count(InvestigationModel.id)).where(*inv_filter, InvestigationModel.status == "active")) or 0
+    completed_invs = db.scalar(select(func.count(InvestigationModel.id)).where(*inv_filter, InvestigationModel.status == "completed")) or 0
 
-    total_entities = db.scalar(select(func.count(EntityModel.id))) or 0
-    total_evidence = db.scalar(select(func.count(EvidenceModel.id))) or 0
-    total_scans = db.scalar(select(func.count(ActiveScanJobModel.id))) or 0
-    total_open_ports = db.scalar(select(func.count(ScanFindingPortModel.id))) or 0
-    total_vuln_scans = db.scalar(select(func.count(VulnerabilityScanJobModel.id))) or 0
-    total_vulns = db.scalar(select(func.count(VulnerabilityFindingModel.id))) or 0
+    inv_scope = select(InvestigationModel.id).where(*inv_filter)
+    total_entities = db.scalar(select(func.count(EntityModel.id)).where(EntityModel.investigation_id.in_(inv_scope))) or 0
+    total_evidence = db.scalar(select(func.count(EvidenceModel.id)).where(EvidenceModel.investigation_id.in_(inv_scope))) or 0
+    total_scans = db.scalar(select(func.count(ActiveScanJobModel.id)).where(ActiveScanJobModel.investigation_id.in_(inv_scope))) or 0
+    total_open_ports = db.scalar(
+        select(func.count(ScanFindingPortModel.id))
+        .join(ScanFindingHostModel, ScanFindingPortModel.host_id == ScanFindingHostModel.id)
+        .where(ScanFindingHostModel.investigation_id.in_(inv_scope))
+    ) or 0
+    total_vuln_scans = db.scalar(select(func.count(VulnerabilityScanJobModel.id)).where(VulnerabilityScanJobModel.investigation_id.in_(inv_scope))) or 0
+    total_vulns = db.scalar(select(func.count(VulnerabilityFindingModel.id)).where(VulnerabilityFindingModel.investigation_id.in_(inv_scope))) or 0
 
     # Recent investigations
     recent_invs = db.scalars(
-        select(InvestigationModel).order_by(InvestigationModel.created_at.desc()).limit(10)
+        select(InvestigationModel).where(*inv_filter).order_by(InvestigationModel.created_at.desc()).limit(10)
     ).all()
 
     # Tool readiness diagnostics
@@ -300,7 +314,10 @@ def render_investigations(
     """Lists investigations with optional search query and status filter."""
     ctx = _base_context(request, db=db, active_nav="investigations")
 
+    current_user = ctx["current_user"]
     query = select(InvestigationModel)
+    if current_user.role != ROLE_ADMINISTRATOR:
+        query = query.where(InvestigationModel.owner_user_id == current_user.id)
     if q and q.strip():
         search_term = f"%{q.strip()}%"
         query = query.where(
@@ -343,7 +360,9 @@ def handle_create_investigation(
     """Registers a new investigation campaign from the web UI."""
     _validate_csrf(request, csrf_token)
     current_user = get_current_user_optional(request, db=db)
-    actor_id = current_user.id if current_user else "web-anonymous"
+    if not current_user or not has_permission(current_user.role, "investigation.create"):
+        raise StarletteHTTPException(status_code=403, detail="Investigation creation permission required")
+    actor_id = current_user.id
 
     # Parse comma-separated fields
     domains_list = [d.strip() for d in (owned_domains or "").split(",") if d.strip()]
@@ -352,21 +371,40 @@ def handle_create_investigation(
     active_list = [t.strip() for t in (active_targets or "").split(",") if t.strip()]
     active_bool = bool(active_scanning_enabled and active_scanning_enabled.lower() in ("true", "1", "yes", "on"))
 
-    inv_id = f"inv-{uuid.uuid4().hex[:10]}"
+    try:
+        payload = InvestigationCreate(
+            name=name,
+            organization_name=organization_name,
+            description=description,
+            lead_investigator=current_user.full_name or current_user.username,
+            scope=ScopeSchema(
+                owned_domains=domains_list,
+                approved_ips=ips_list,
+                approved_cidrs=cidrs_list,
+                active_targets=active_list,
+            ),
+            authorization_reference=authorization_reference.strip() if authorization_reference else None,
+            active_scanning_enabled=active_bool,
+        )
+    except ValidationError as exc:
+        raise StarletteHTTPException(status_code=422, detail="Invalid investigation details or target scope") from exc
+
+    inv_id = f"inv-{uuid.uuid4().hex}"
     inv = InvestigationModel(
         id=inv_id,
-        name=name.strip(),
-        organization_name=organization_name.strip(),
-        description=description.strip(),
-        lead_investigator=lead_investigator.strip(),
+        name=payload.name,
+        organization_name=payload.organization_name,
+        description=payload.description,
+        lead_investigator=payload.lead_investigator,
+        owner_user_id=current_user.id,
         team_members=[],
         status="active",
-        owned_domains=domains_list,
-        approved_ips=ips_list,
-        approved_cidrs=cidrs_list,
-        active_targets=active_list,
-        active_scanning_enabled=active_bool,
-        authorization_reference=authorization_reference.strip() if authorization_reference else None,
+        owned_domains=payload.scope.owned_domains,
+        approved_ips=payload.scope.approved_ips,
+        approved_cidrs=payload.scope.approved_cidrs,
+        active_targets=payload.scope.active_targets,
+        active_scanning_enabled=payload.active_scanning_enabled,
+        authorization_reference=payload.authorization_reference,
     )
     db.add(inv)
     db.commit()
@@ -395,8 +433,10 @@ def render_investigation_detail(
     ctx = _base_context(request, db=db, active_nav="investigations")
 
     inv = db.get(InvestigationModel, investigation_id)
-    if not inv:
-        raise StarletteHTTPException(status_code=404, detail=f"Investigation '{investigation_id}' not found.")
+    current_user = ctx["current_user"]
+    if not current_user or not has_permission(current_user.role, "investigation.view"):
+        raise StarletteHTTPException(status_code=403, detail="Investigation view permission required")
+    inv = require_investigation_access(inv, current_user)
 
     authorizations = db.scalars(
         select(TargetAuthorizationModel).where(TargetAuthorizationModel.investigation_id == investigation_id)
@@ -459,32 +499,47 @@ def handle_create_authorization(
     request: Request,
     target: str = Form(...),
     target_type: str = Form("IP"),
-    approved_by: str = Form(...),
+    approved_by: str = Form(""),
     authorization_reference: str = Form(...),
-    operations: List[str] = Form(["SCAN_PORTS", "SCAN_VULN"]),
-    valid_days: int = Form(30),
+    operations: List[str] = Form(["SCAN_ACTIVE", "SCAN_VULN"]),
+    valid_days: int = Form(30, ge=1, le=3650),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
 ):
     """Adds an explicit target authorization record for active reconnaissance."""
     _validate_csrf(request, csrf_token)
-    inv = db.get(InvestigationModel, investigation_id)
-    if not inv:
-        raise StarletteHTTPException(status_code=404, detail=f"Investigation '{investigation_id}' not found.")
+    current_user = get_current_user_optional(request, db=db)
+    if not current_user or not has_permission(current_user.role, "scope.manage"):
+        raise StarletteHTTPException(status_code=403, detail="Target authorization management permission required")
+    inv = require_investigation_access(db.get(InvestigationModel, investigation_id), current_user)
 
     now = datetime.now(timezone.utc)
     valid_to = now + timedelta(days=valid_days)
-
+    try:
+        payload = TargetAuthorizationCreate(
+            target=target,
+            target_type=target_type.strip().upper(),
+            allowed_operations=operations,
+            authorization_reference=authorization_reference,
+            valid_from=now,
+            valid_to=valid_to,
+            approved_by=current_user.username,
+        )
+    except ValidationError as exc:
+        raise StarletteHTTPException(status_code=422, detail="Invalid target authorization details") from exc
+    in_scope, reason = is_target_in_investigation_scope(inv, payload.target)
+    if not in_scope:
+        raise StarletteHTTPException(status_code=422, detail=reason)
     authz = TargetAuthorizationModel(
         id=f"authz-{uuid.uuid4().hex[:10]}",
         investigation_id=investigation_id,
-        target=target.strip(),
-        target_type=target_type.strip().upper(),
-        allowed_operations=operations,
-        authorization_reference=authorization_reference.strip(),
-        approved_by=approved_by.strip(),
-        valid_from=now,
-        valid_to=valid_to,
+        target=normalize_target(payload.target),
+        target_type=payload.target_type,
+        allowed_operations=payload.allowed_operations,
+        authorization_reference=payload.authorization_reference,
+        approved_by=current_user.username,
+        valid_from=payload.valid_from or now,
+        valid_to=payload.valid_to,
         is_revoked=False,
     )
     db.add(authz)
@@ -493,12 +548,12 @@ def handle_create_authorization(
     log_audit_event(
         db=db,
         event_type="TARGET_AUTHORIZATION_GRANTED",
-        actor_id=approved_by.strip(),
+        actor_id=current_user.id,
         outcome="SUCCESS",
         details={
             "investigation_id": investigation_id,
-            "target": target.strip(),
-            "operations": operations,
+            "target": authz.target,
+            "operations": authz.allowed_operations,
             "valid_to": valid_to.isoformat(),
         },
     )
@@ -528,8 +583,11 @@ async def handle_trigger_passive_recon(
 
     current_user = get_current_user_optional(request, db=db)
     if not current_user:
-        current_user = db.scalars(select(UserModel).where(UserModel.role == "administrator")).first()
-    actor_id = current_user.id if current_user else "web-admin"
+        raise StarletteHTTPException(status_code=401, detail="Authentication required")
+    if not has_permission(current_user.role, "recon.passive"):
+        raise StarletteHTTPException(status_code=403, detail="Passive reconnaissance permission required")
+    inv = require_investigation_access(inv, current_user)
+    actor_id = current_user.id
     orchestrator = PassiveReconOrchestrator(
         db=db,
         investigation_id=investigation_id,
@@ -545,6 +603,8 @@ async def handle_trigger_passive_recon(
             outcome="FAILURE",
             details={"investigation_id": investigation_id, "target": target, "error": str(e)},
         )
+        raise StarletteHTTPException(status_code=403 if isinstance(e, PermissionError) else 400,
+                                     detail="Passive reconnaissance failed authorization or collection. Refresh the investigation to review job status.") from e
 
     return RedirectResponse(
         url=f"/investigations/{investigation_id}#tab-passive",
@@ -557,7 +617,7 @@ async def handle_trigger_nmap_scan(
     investigation_id: str,
     request: Request,
     target: str = Form(...),
-    profile_id: str = Form("nmap-service-detect"),
+    profile_id: str = Form("service_inventory"),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
 ):
@@ -568,21 +628,30 @@ async def handle_trigger_nmap_scan(
         raise StarletteHTTPException(status_code=404, detail="Investigation not found")
 
     current_user = get_current_user_optional(request, db=db)
-    actor_id = current_user.id if current_user else "web-admin"
+    if not current_user:
+        raise StarletteHTTPException(status_code=401, detail="Authentication required")
+    if not has_permission(current_user.role, "recon.active"):
+        raise StarletteHTTPException(status_code=403, detail="Active reconnaissance permission required")
+    inv = require_investigation_access(inv, current_user)
+    actor_id = current_user.id
 
     profile = get_scan_profile(profile_id)
     if not profile:
         raise StarletteHTTPException(status_code=400, detail=f"Invalid scan profile '{profile_id}'")
 
-    runner = NmapRunner()
+    runner = get_nmap_runner()
     try:
-        await runner.execute_scan(
-            investigation_id=investigation_id,
-            target=target.strip(),
-            profile=profile,
-            requested_by=actor_id,
+        job = await runner.create_scan_job(
+            db=db, investigation=inv, target=target.strip(), profile_id=profile_id,
+            actor_user=current_user, client_ip=request.client.host if request.client else None,
+            request_id=getattr(request.state, "request_id", None),
         )
-    except Exception as e:
+        asyncio.create_task(runner.execute_scan(
+            db_factory=SessionLocal, job_id=job.id,
+            client_ip=request.client.host if request.client else None,
+            request_id=getattr(request.state, "request_id", None),
+        ))
+    except NmapExecutionError as e:
         log_audit_event(
             db=db,
             event_type="ACTIVE_SCAN_LAUNCH_FAILED",
@@ -590,6 +659,7 @@ async def handle_trigger_nmap_scan(
             outcome="FAILURE",
             details={"investigation_id": investigation_id, "target": target, "error": str(e)},
         )
+        raise StarletteHTTPException(status_code=403, detail="Nmap scan was not queued; verify tool availability, scope, and authorization.") from e
 
     return RedirectResponse(
         url=f"/investigations/{investigation_id}#tab-active",
@@ -613,7 +683,12 @@ async def handle_trigger_vuln_scan(
         raise StarletteHTTPException(status_code=404, detail="Investigation not found")
 
     current_user = get_current_user_optional(request, db=db)
-    actor_id = current_user.id if current_user else "web-admin"
+    if not current_user:
+        raise StarletteHTTPException(status_code=401, detail="Authentication required")
+    if not has_permission(current_user.role, "vulnerability.scan"):
+        raise StarletteHTTPException(status_code=403, detail="Vulnerability scanning permission required")
+    inv = require_investigation_access(inv, current_user)
+    actor_id = current_user.id
 
     profile = get_vuln_profile(profile_id)
     if not profile:
@@ -622,14 +697,12 @@ async def handle_trigger_vuln_scan(
     orchestrator = get_vuln_orchestrator()
     try:
         job = orchestrator.create_assessment_job(
-            db=db,
-            investigation_id=investigation_id,
-            target=target.strip(),
-            profile_id=profile_id,
-            requested_by=actor_id,
+            db=db, investigation=inv, target=target.strip(), profile_id=profile_id,
+            actor_user=current_user, client_ip=request.client.host if request.client else None,
+            request_id=getattr(request.state, "request_id", None),
         )
-    except Exception as e:
-        raise StarletteHTTPException(status_code=400, detail=str(e))
+    except (VulnerabilityAssessmentError, ValueError) as e:
+        raise StarletteHTTPException(status_code=403, detail="Assessment was not queued; verify target authorization and profile.") from e
 
     import asyncio
     asyncio.create_task(
@@ -639,6 +712,8 @@ async def handle_trigger_vuln_scan(
             target=job.target,
             profile_id=job.profile_id,
             requested_by=actor_id,
+            client_ip=request.client.host if request.client else None,
+            request_id=getattr(request.state, "request_id", None),
         )
     )
 
@@ -657,11 +732,21 @@ def handle_cancel_vuln_scan(
 ):
     """Requests cooperative cancellation of a Greenbone task."""
     _validate_csrf(request, csrf_token)
+    current_user = get_current_user_optional(request, db=db)
+    if not current_user or not has_permission(current_user.role, "vulnerability.scan"):
+        raise StarletteHTTPException(status_code=403, detail="Vulnerability scanning permission required")
+    job = db.get(VulnerabilityScanJobModel, job_id)
+    if not job:
+        raise StarletteHTTPException(status_code=404, detail="Assessment job not found")
+    require_investigation_access(db.get(InvestigationModel, job.investigation_id), current_user)
     orchestrator = get_vuln_orchestrator()
     try:
-        orchestrator.cancel_job(db=db, job_id=job_id, reason="Cancelled by user via dashboard.")
-    except Exception:
-        pass
+        orchestrator.cancel_job(db=db, job_id=job_id, actor_user=current_user,
+                                reason="Cancelled by user via dashboard.",
+                                client_ip=request.client.host if request.client else None,
+                                request_id=getattr(request.state, "request_id", None))
+    except VulnerabilityAssessmentError as exc:
+        raise StarletteHTTPException(status_code=409, detail="Assessment cancellation could not be completed.") from exc
 
     return RedirectResponse(url="/scans", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -676,12 +761,11 @@ def download_investigation_pdf(
     db: Session = Depends(get_db),
 ):
     """Generates and streams a professional ReportLab PDF dossier from persisted records."""
-    inv = db.get(InvestigationModel, investigation_id)
-    if not inv:
-        raise StarletteHTTPException(status_code=404, detail=f"Investigation '{investigation_id}' not found.")
-
     current_user = get_current_user_optional(request, db=db)
-    actor_name = current_user.username if current_user else "Lead Analyst"
+    if not current_user or not has_permission(current_user.role, "report.export"):
+        raise StarletteHTTPException(status_code=403, detail="Report export permission required")
+    inv = require_investigation_access(db.get(InvestigationModel, investigation_id), current_user)
+    actor_name = current_user.username
 
     try:
         pdf_bytes = InvestigationReportGenerator.generate_pdf(
@@ -690,8 +774,9 @@ def download_investigation_pdf(
             generated_by=actor_name,
             dossier_title="FootprintIQ Comprehensive Reconnaissance Dossier",
         )
-    except Exception as e:
-        raise StarletteHTTPException(status_code=500, detail=f"Failed to generate report: {str(e)}")
+    except Exception:
+        logger.exception("PDF report generation failed for investigation %s", investigation_id)
+        raise StarletteHTTPException(status_code=500, detail="Failed to generate PDF report.")
 
     log_audit_event(
         db=db,
@@ -719,17 +804,17 @@ def download_investigation_graphml(
     db: Session = Depends(get_db),
 ):
     """Generates and streams a standard GraphML XML export for Gephi, Cytoscape, and Maltego."""
-    inv = db.get(InvestigationModel, investigation_id)
-    if not inv:
-        raise StarletteHTTPException(status_code=404, detail=f"Investigation '{investigation_id}' not found.")
-
     current_user = get_current_user_optional(request, db=db)
-    actor_name = current_user.username if current_user else "Lead Analyst"
+    if not current_user or not has_permission(current_user.role, "report.export"):
+        raise StarletteHTTPException(status_code=403, detail="Report export permission required")
+    inv = require_investigation_access(db.get(InvestigationModel, investigation_id), current_user)
+    actor_name = current_user.username
 
     try:
         xml_content = GraphMLExporter.generate_graphml(investigation_id=investigation_id, db=db)
-    except Exception as e:
-        raise StarletteHTTPException(status_code=500, detail=f"Failed to generate GraphML export: {str(e)}")
+    except Exception:
+        logger.exception("GraphML export failed for investigation %s", investigation_id)
+        raise StarletteHTTPException(status_code=500, detail="Failed to generate GraphML export.")
 
     log_audit_event(
         db=db,
@@ -899,9 +984,17 @@ def render_findings(
     db: Session = Depends(get_db),
 ):
     """Unified matrix of all vulnerability and exposure findings."""
+    current_user = get_current_user_optional(request, db=db)
+    if not current_user:
+        return RedirectResponse(url="/login?next=/findings", status_code=status.HTTP_303_SEE_OTHER)
     ctx = _base_context(request, db=db, active_nav="findings")
 
-    query = select(VulnerabilityFindingModel)
+    accessible_investigations = select(InvestigationModel.id)
+    if current_user.role != ROLE_ADMINISTRATOR:
+        accessible_investigations = accessible_investigations.where(InvestigationModel.owner_user_id == current_user.id)
+    query = select(VulnerabilityFindingModel).where(
+        VulnerabilityFindingModel.investigation_id.in_(accessible_investigations)
+    )
     if q and q.strip():
         term = f"%{q.strip()}%"
         query = query.where(
@@ -916,7 +1009,9 @@ def render_findings(
         query = query.where(VulnerabilityFindingModel.investigation_id == investigation_id.strip())
 
     findings = db.scalars(query.order_by(VulnerabilityFindingModel.cvss_score.desc().nullslast())).all()
-    investigations = db.scalars(select(InvestigationModel).order_by(InvestigationModel.name.asc())).all()
+    investigations = db.scalars(
+        select(InvestigationModel).where(InvestigationModel.id.in_(accessible_investigations)).order_by(InvestigationModel.name.asc())
+    ).all()
 
     ctx.update({
         "findings": findings,
@@ -931,11 +1026,17 @@ def render_findings(
 @router.get("/scans", response_class=HTMLResponse)
 def render_scans(request: Request, db: Session = Depends(get_db)):
     """Live scan execution monitor for passive, Nmap, and Greenbone jobs."""
+    current_user = get_current_user_optional(request, db=db)
+    if not current_user:
+        return RedirectResponse(url="/login?next=/scans", status_code=status.HTTP_303_SEE_OTHER)
     ctx = _base_context(request, db=db, active_nav="scans")
 
-    vuln_jobs = db.scalars(select(VulnerabilityScanJobModel).order_by(VulnerabilityScanJobModel.started_at.desc()).limit(25)).all()
-    nmap_jobs = db.scalars(select(ActiveScanJobModel).order_by(ActiveScanJobModel.started_at.desc()).limit(25)).all()
-    collection_jobs = db.scalars(select(CollectionJobModel).order_by(CollectionJobModel.started_at.desc()).limit(25)).all()
+    inv_scope = select(InvestigationModel.id)
+    if current_user.role != ROLE_ADMINISTRATOR:
+        inv_scope = inv_scope.where(InvestigationModel.owner_user_id == current_user.id)
+    vuln_jobs = db.scalars(select(VulnerabilityScanJobModel).where(VulnerabilityScanJobModel.investigation_id.in_(inv_scope)).order_by(VulnerabilityScanJobModel.started_at.desc()).limit(25)).all()
+    nmap_jobs = db.scalars(select(ActiveScanJobModel).where(ActiveScanJobModel.investigation_id.in_(inv_scope)).order_by(ActiveScanJobModel.started_at.desc()).limit(25)).all()
+    collection_jobs = db.scalars(select(CollectionJobModel).where(CollectionJobModel.investigation_id.in_(inv_scope)).order_by(CollectionJobModel.started_at.desc()).limit(25)).all()
 
     ctx.update({
         "vuln_jobs": vuln_jobs,
@@ -948,9 +1049,15 @@ def render_scans(request: Request, db: Session = Depends(get_db)):
 @router.get("/evidence", response_class=HTMLResponse)
 def render_evidence(request: Request, db: Session = Depends(get_db)):
     """Forensic evidence ledger with SHA-256 hashes."""
+    current_user = get_current_user_optional(request, db=db)
+    if not current_user:
+        return RedirectResponse(url="/login?next=/evidence", status_code=status.HTTP_303_SEE_OTHER)
     ctx = _base_context(request, db=db, active_nav="evidence")
 
-    evidence_list = db.scalars(select(EvidenceModel).order_by(EvidenceModel.collected_at.desc()).limit(50)).all()
+    inv_scope = select(InvestigationModel.id)
+    if current_user.role != ROLE_ADMINISTRATOR:
+        inv_scope = inv_scope.where(InvestigationModel.owner_user_id == current_user.id)
+    evidence_list = db.scalars(select(EvidenceModel).where(EvidenceModel.investigation_id.in_(inv_scope)).order_by(EvidenceModel.collected_at.desc()).limit(50)).all()
     ctx.update({"evidence_list": evidence_list})
     return templates.TemplateResponse(request=request, name="evidence.html", context=ctx)
 
@@ -988,11 +1095,16 @@ def handle_revoke_authorization(
     if not authz:
         raise StarletteHTTPException(status_code=404, detail=f"Authorization '{authorization_id}' not found.")
 
+    current_user = get_current_user_optional(request, db=db)
+    if not current_user or not has_permission(current_user.role, "scope.manage"):
+        raise StarletteHTTPException(status_code=403, detail="Target authorization management permission required")
+    inv = require_investigation_access(db.get(InvestigationModel, authz.investigation_id), current_user)
+    if authz.is_revoked:
+        return RedirectResponse(url=f"/investigations/{inv.id}#tab-authorizations", status_code=status.HTTP_303_SEE_OTHER)
     authz.is_revoked = True
     db.commit()
 
-    current_user = get_current_user_optional(request, db=db)
-    actor_id = current_user.username if current_user else "admin"
+    actor_id = current_user.id
 
     log_audit_event(
         db=db,

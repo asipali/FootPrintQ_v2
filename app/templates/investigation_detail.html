@@ -17,7 +17,15 @@
           {% else %}
             <span class="badge badge-amber">{{ inv.status|upper }}</span>
           {% endif %}
-          <span class="badge badge-muted mono">SCORE: {{ score.total_score }}/100 ({{ score.tier|upper }})</span>
+          {% if score.assessment_status == 'NOT_ASSESSED' %}
+            <span class="badge badge-muted mono">EXPOSURE: NOT ASSESSED</span>
+          {% elif score.assessment_status == 'FAILED' %}
+            <span class="badge badge-amber mono">EXPOSURE: ASSESSMENT FAILED</span>
+          {% elif score.assessment_status == 'IN_PROGRESS' %}
+            <span class="badge badge-amber mono">EXPOSURE: ASSESSMENT IN PROGRESS</span>
+          {% else %}
+            <span class="badge badge-muted mono">OBSERVED-DATA SCORE: {{ score.total_score }}/100 ({{ score.tier|upper }}) · PARTIAL COVERAGE</span>
+          {% endif %}
         </div>
         <h2 style="font-size: 1.35rem; font-weight: 700; color: var(--text-primary); margin-bottom: 0.25rem;">{{ inv.name }}</h2>
         <p style="font-size: 0.85rem; color: var(--text-secondary);">
@@ -302,9 +310,9 @@
           <div>
             <label class="form-label">Vetted Scan Profile</label>
             <select name="profile_id" class="form-select">
-              <option value="nmap-service-detect">nmap-service-detect (Top ports + Version Detection)</option>
-              <option value="nmap-quick">nmap-quick (Fast Port Discovery)</option>
-              <option value="nmap-conservative">nmap-conservative (Low-Rate Timing)</option>
+              <option value="service_inventory">service_inventory (Top ports + Version Detection)</option>
+              <option value="basic_tcp">basic_tcp (Top 100 TCP ports)</option>
+              <option value="quick_ping">quick_ping (Host discovery only)</option>
             </select>
           </div>
           <div>
@@ -360,8 +368,19 @@
     {% else %}
     <div class="empty-state">
       <div class="empty-state-icon">&empty;</div>
-      <h3>No Open Ports Enumerated</h3>
-      <p>Ensure target host is authorized with operation <code class="mono">SCAN_PORTS</code> and dispatch an Nmap scan above.</p>
+      {% if not nmap_jobs %}
+        <h3>No Nmap Scan Performed</h3>
+        <p>No scan job exists yet. Authorize a target for <code class="mono">SCAN_ACTIVE</code> before launching one.</p>
+      {% elif nmap_jobs[0].status == 'COMPLETED' %}
+        <h3>Scan Completed — No Ports Reported</h3>
+        <p>The latest completed scan returned no port findings (host discovery profiles do not enumerate ports).</p>
+      {% elif nmap_jobs[0].status in ('QUEUED', 'RUNNING', 'AUTHORIZING') %}
+        <h3>Scan {{ nmap_jobs[0].status|replace('_', ' ')|title }}</h3>
+        <p>Latest job {{ nmap_jobs[0].id }} is running or queued. Refresh to check its status.</p>
+      {% else %}
+        <h3>Scan {{ nmap_jobs[0].status|replace('_', ' ')|title }}</h3>
+        <p>{{ nmap_jobs[0].error_message or 'The latest scan did not complete successfully.' }}</p>
+      {% endif %}
     </div>
     {% endif %}
   </div>
@@ -375,7 +394,7 @@
   <div class="card">
     <div class="card-header">
       <h3 class="card-title">
-        <span class="status-pill failed"></span>
+        <span class="status-pill {% if vuln_jobs and vuln_jobs[0].status == 'RUNNING' %}running{% else %}failed{% endif %}"></span>
         Dispatch Greenbone / OpenVAS Assessment
       </h3>
       <span class="badge badge-crit">SCAN_VULN AUTHORIZATION REQUIRED</span>
@@ -471,8 +490,19 @@
     {% else %}
     <div class="empty-state">
       <div class="empty-state-icon">&empty;</div>
-      <h3>No Vulnerabilities Recorded</h3>
-      <p>Ensure target host is authorized with operation <code class="mono">SCAN_VULN</code> and dispatch a Greenbone scan above.</p>
+      {% if not vuln_jobs %}
+        <h3>No Vulnerability Assessment Performed</h3>
+        <p>No assessment job exists yet. Authorize a target for <code class="mono">SCAN_VULN</code> before launching one.</p>
+      {% elif vuln_jobs[0].status == 'COMPLETED' %}
+        <h3>Assessment Completed — No Findings</h3>
+        <p>The latest completed assessment returned zero vulnerability findings.</p>
+      {% elif vuln_jobs[0].status in ('QUEUED', 'AUTHORIZING', 'CONFIGURING_TARGET', 'CREATING_TASK', 'RUNNING', 'RETRIEVING_REPORT', 'PARSING') %}
+        <h3>Assessment {{ vuln_jobs[0].status|replace('_', ' ')|title }}</h3>
+        <p>Latest job {{ vuln_jobs[0].id }} is at {{ vuln_jobs[0].progress or 0 }}%. Refresh to check its status.</p>
+      {% else %}
+        <h3>Assessment {{ vuln_jobs[0].status|replace('_', ' ')|title }}</h3>
+        <p>{{ vuln_jobs[0].error_message or 'No completed findings are available for the latest assessment.' }}</p>
+      {% endif %}
     </div>
     {% endif %}
   </div>
@@ -636,9 +666,26 @@
     <div class="card">
       <div class="card-header">
         <h3 class="card-title">5-Factor Exposure Score Breakdown</h3>
-        <span class="badge badge-brand mono">{{ score.total_score }} / 100 &middot; {{ score.tier|upper }}</span>
+        {% if score.assessment_status == 'NOT_ASSESSED' %}
+          <span class="badge badge-muted mono">NOT ASSESSED</span>
+        {% elif score.assessment_status == 'FAILED' %}
+          <span class="badge badge-amber mono">ASSESSMENT FAILED</span>
+        {% elif score.assessment_status == 'IN_PROGRESS' %}
+          <span class="badge badge-amber mono">ASSESSMENT IN PROGRESS</span>
+        {% else %}
+          <span class="badge badge-brand mono">OBSERVED-DATA {{ score.total_score }} / 100 &middot; {{ score.tier|upper }}</span>
+        {% endif %}
       </div>
       <div class="card-body" style="font-size: 0.82rem;">
+        {% if score.assessment_status == 'NOT_ASSESSED' %}
+        <p style="color: var(--text-secondary);">No completed collection or assessment job is recorded. A zero score here would be misleading; this investigation has not been assessed.</p>
+        {% elif score.assessment_status == 'FAILED' %}
+        <p style="color: var(--text-secondary);">Recorded jobs have not produced a completed assessment. The calculated values below reflect stored data only and are not a clean bill of health.</p>
+        {% elif score.assessment_status == 'IN_PROGRESS' %}
+        <p style="color: var(--text-secondary);">Assessment work is still in progress. Values below reflect stored data so far and may change when jobs finish.</p>
+        {% else %}
+        <p style="color: var(--text-secondary);">Observed-data heuristic based on available records. Coverage depends on enabled collectors and scanners; a low score or zero findings does not establish that the target is secure.</p>
+        {% endif %}
         <p style="margin-bottom: 0.75rem; color: var(--text-secondary);">
           <strong>Formula:</strong> <code class="mono">{{ score.formula_version }}</code>
         </p>
@@ -674,7 +721,7 @@
     <!-- Generate PDF Report Card -->
     <div class="card">
       <div class="card-header">
-        <h3 class="card-title">Comprehensive 17-Section Dossier</h3>
+        <h3 class="card-title">Investigation Dossier</h3>
         <span class="badge badge-emerald">REPORTLAB PLATYPUS</span>
       </div>
       <div class="card-body" style="font-size: 0.82rem; line-height: 1.6;">
@@ -730,7 +777,7 @@
         </div>
         <div class="form-group">
           <label class="form-label">Approved By *</label>
-          <input type="text" name="approved_by" required class="form-control" value="{{ current_user.username if current_user else 'Security Officer' }}">
+          <input type="text" name="approved_by" required class="form-control" value="{{ current_user.username if current_user else 'Security Officer' }}" readonly>
         </div>
       </div>
 
@@ -743,12 +790,12 @@
         <label class="form-label">Permitted Operations</label>
         <div style="display: flex; flex-direction: column; gap: 0.4rem; font-size: 0.8rem; margin-top: 0.35rem;">
           <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-            <input type="checkbox" name="operations" value="SCAN_PASSIVE" checked>
-            <span><strong style="color: var(--passive-primary);">SCAN_PASSIVE:</strong> Public OSINT, DNS, RDAP</span>
+            <input type="checkbox" name="operations" value="RECON_PASSIVE" checked>
+            <span><strong style="color: var(--passive-primary);">RECON_PASSIVE:</strong> Public OSINT, DNS, RDAP</span>
           </label>
           <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-            <input type="checkbox" name="operations" value="SCAN_PORTS" checked>
-            <span><strong style="color: var(--active-primary);">SCAN_PORTS:</strong> Nmap network port and service detection</span>
+            <input type="checkbox" name="operations" value="SCAN_ACTIVE" checked>
+            <span><strong style="color: var(--active-primary);">SCAN_ACTIVE:</strong> Nmap network port and service detection</span>
           </label>
           <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
             <input type="checkbox" name="operations" value="SCAN_VULN" checked>

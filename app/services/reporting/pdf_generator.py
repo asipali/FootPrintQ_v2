@@ -1,27 +1,23 @@
 """Consolidated cybersecurity reconnaissance dossier PDF generator using ReportLab Platypus.
 
 Builds a professional, multi-page, publication-grade investigation report containing genuine
-data from database models (Entities, Evidence, Nmap Ports, Greenbone Vulnerabilities, Audit Logs).
+data from investigation, authorization, evidence, job, scan, finding, and scoring records.
 """
 
 import io
-import os
-import hashlib
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
+from xml.sax.saxutils import escape as xml_escape
 
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
 from reportlab.platypus import (
     SimpleDocTemplate,
     Paragraph,
     Spacer,
     Table,
     TableStyle,
-    PageBreak,
-    KeepTogether,
     HRFlowable,
 )
 from reportlab.pdfgen import canvas
@@ -32,8 +28,32 @@ from app.models.investigation import InvestigationModel
 from app.models.recon import EntityModel, EvidenceModel, TargetAuthorizationModel, CollectionJobModel
 from app.models.scan import ActiveScanJobModel, ScanFindingHostModel, ScanFindingPortModel
 from app.models.vulnerability import VulnerabilityScanJobModel, VulnerabilityFindingModel
-from app.models.audit import AuditLogModel
 from app.services.scoring.calculator import ExposureScorer, ExposureScoreBreakdown
+
+
+def _safe_text(value: Any) -> str:
+    """Escape untrusted database text before it is interpreted as ReportLab markup."""
+    return xml_escape("" if value is None else str(value))
+
+
+def _job_state(jobs: list) -> str:
+    """Summarize persisted jobs without treating absent or failed work as success."""
+    if not jobs:
+        return "NOT PERFORMED"
+    statuses = {(job.status or "").upper() for job in jobs}
+    active = {"QUEUED", "PENDING", "AUTHORIZING", "RUNNING", "PARSING", "CONFIGURING_TARGET", "CREATING_TASK", "RETRIEVING_REPORT"}
+    if statuses & active:
+        return "PENDING" if statuses <= {"QUEUED", "PENDING"} else "RUNNING"
+    successes = statuses & {"COMPLETED", "PARTIAL"}
+    if successes and (len(successes) > 1 or statuses - successes):
+        return "PARTIAL"
+    if "PARTIAL" in successes:
+        return "PARTIAL"
+    if "COMPLETED" in successes:
+        return "COMPLETED"
+    if statuses == {"CANCELLED"}:
+        return "CANCELLED"
+    return "FAILED"
 
 
 class NumberedCanvas(canvas.Canvas):
@@ -74,13 +94,13 @@ class NumberedCanvas(canvas.Canvas):
         self.setLineWidth(0.5)
         self.line(54, 45, 558, 45)
 
-        self.drawString(54, 32, "Confidential — Generated from Verified FootprintIQ Cryptographic Ledger")
+        self.drawString(54, 32, "Confidential — Generated from recorded FootprintIQ investigation data")
         self.drawRightString(558, 32, f"Page {self._pageNumber} of {page_count}")
         self.restoreState()
 
 
 class InvestigationReportGenerator:
-    """Generates the consolidated 17-section investigation dossier PDF."""
+    """Generates the consolidated investigation dossier PDF."""
 
     @classmethod
     def generate_pdf(
@@ -130,12 +150,19 @@ class InvestigationReportGenerator:
             select(VulnerabilityFindingModel).where(VulnerabilityFindingModel.investigation_id == investigation_id)
         ).all()
 
-        audit_logs: List[AuditLogModel] = db.scalars(
-            select(AuditLogModel).order_by(AuditLogModel.timestamp.desc()).limit(20)
-        ).all()
-
         # 2. Compute 5-factor Exposure Score
         score = ExposureScorer.calculate_for_investigation(investigation_id, db=db)
+        passive_state = _job_state(collection_jobs)
+        nmap_state = _job_state(nmap_jobs)
+        vuln_state = _job_state(vuln_jobs)
+        if score.assessment_status == "NOT_ASSESSED":
+            score_label = "NOT ASSESSED"
+        elif score.assessment_status == "FAILED":
+            score_label = "ASSESSMENT FAILED"
+        elif score.assessment_status == "IN_PROGRESS":
+            score_label = "ASSESSMENT IN PROGRESS — INTERIM DATA"
+        else:
+            score_label = f"PARTIAL COVERAGE — OBSERVED DATA {score.total_score}/100 ({score.tier.upper()})"
 
         # 3. Setup document and styles
         buffer = io.BytesIO()
@@ -223,6 +250,13 @@ class InvestigationReportGenerator:
             parent=table_cell,
             fontName="Helvetica-Bold",
         )
+        finding_detail = ParagraphStyle(
+            "FindingDetail",
+            parent=table_cell,
+            fontSize=6.8,
+            leading=8.5,
+            wordWrap="CJK",
+        )
         badge_crit = ParagraphStyle(
             "BadgeCrit",
             parent=table_cell_bold,
@@ -255,21 +289,21 @@ class InvestigationReportGenerator:
         # 1. Cover Page & Document Identification
         # =========================================================================
         story.append(Paragraph("FOOTPRINTIQ", ParagraphStyle("Brand", fontName="Helvetica-Bold", fontSize=10, textColor=colors.HexColor("#0284c7"), spaceAfter=4)))
-        story.append(Paragraph(dossier_title, title_style))
-        story.append(Paragraph(f"Digital Footprint &amp; Vulnerability Assessment Dossier &middot; Case ID: <font name='Courier'>{inv.id}</font>", subtitle_style))
+        story.append(Paragraph(_safe_text(dossier_title), title_style))
+        story.append(Paragraph(f"Digital Footprint &amp; Vulnerability Assessment Dossier &middot; Case ID: <font name='Courier'>{_safe_text(inv.id)}</font>", subtitle_style))
         story.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor("#0284c7"), spaceAfter=15))
 
         # Metadata table
         now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         meta_data = [
-            [Paragraph("Target Organization:", meta_label), Paragraph(inv.organization_name, body_bold),
-             Paragraph("Lead Investigator:", meta_label), Paragraph(inv.lead_investigator, table_cell)],
-            [Paragraph("Campaign Title:", meta_label), Paragraph(inv.name, table_cell),
-             Paragraph("Generated By:", meta_label), Paragraph(generated_by, table_cell)],
-            [Paragraph("Assessment Status:", meta_label), Paragraph(inv.status.upper(), body_bold),
+            [Paragraph("Target Organization:", meta_label), Paragraph(_safe_text(inv.organization_name), body_bold),
+             Paragraph("Lead Investigator:", meta_label), Paragraph(_safe_text(inv.lead_investigator), table_cell)],
+            [Paragraph("Campaign Title:", meta_label), Paragraph(_safe_text(inv.name), table_cell),
+             Paragraph("Generated By:", meta_label), Paragraph(_safe_text(generated_by), table_cell)],
+            [Paragraph("Investigation Status:", meta_label), Paragraph(_safe_text(inv.status.upper()), body_bold),
              Paragraph("Generation Date:", meta_label), Paragraph(now_utc, code_style)],
-            [Paragraph("Authorization Ref:", meta_label), Paragraph(inv.authorization_reference or "None Specified", code_style),
-             Paragraph("Composite Exposure:", meta_label), Paragraph(f"{score.total_score}/100 ({score.tier.upper()})", body_bold)],
+            [Paragraph("Authorization Ref:", meta_label), Paragraph(_safe_text(inv.authorization_reference or "None Specified"), code_style),
+             Paragraph("Exposure Assessment:", meta_label), Paragraph(_safe_text(score_label), body_bold)],
         ]
         t_meta = Table(meta_data, colWidths=[110, 145, 105, 144])
         t_meta.setStyle(TableStyle([
@@ -309,10 +343,10 @@ class InvestigationReportGenerator:
         # 3. Investigation Scope & Target Definition
         # =========================================================================
         story.append(Paragraph("2. Investigation Scope &amp; Target Definition", h1_style))
-        owned_domains_str = ", ".join(inv.owned_domains) if inv.owned_domains else "None"
-        approved_ips_str = ", ".join(inv.approved_ips) if inv.approved_ips else "None"
-        approved_cidrs_str = ", ".join(inv.approved_cidrs) if inv.approved_cidrs else "None"
-        active_targets_str = ", ".join(inv.active_targets) if inv.active_targets else "None"
+        owned_domains_str = _safe_text(", ".join(inv.owned_domains) if inv.owned_domains else "None")
+        approved_ips_str = _safe_text(", ".join(inv.approved_ips) if inv.approved_ips else "None")
+        approved_cidrs_str = _safe_text(", ".join(inv.approved_cidrs) if inv.approved_cidrs else "None")
+        active_targets_str = _safe_text(", ".join(inv.active_targets) if inv.active_targets else "None")
 
         scope_rows = [
             [Paragraph("Target Apex Domains", meta_label), Paragraph(owned_domains_str, code_style)],
@@ -349,10 +383,10 @@ class InvestigationReportGenerator:
                 status_str = "REVOKED" if a.is_revoked else "ACTIVE"
                 ops_str = ", ".join(a.allowed_operations) if a.allowed_operations else "None"
                 auth_rows.append([
-                    Paragraph(a.target, code_style),
-                    Paragraph(a.target_type, table_cell),
-                    Paragraph(ops_str, code_style),
-                    Paragraph(a.approved_by, table_cell),
+                    Paragraph(_safe_text(a.target), code_style),
+                    Paragraph(_safe_text(a.target_type), table_cell),
+                    Paragraph(_safe_text(ops_str), code_style),
+                    Paragraph(_safe_text(a.approved_by), table_cell),
                     Paragraph(a.valid_to.strftime("%Y-%m-%d"), table_cell),
                     Paragraph(status_str, body_bold),
                 ])
@@ -374,33 +408,38 @@ class InvestigationReportGenerator:
         # =========================================================================
         story.append(Paragraph("4. Executive Summary &amp; Exposure Score Breakdown", h1_style))
         summary_text = (
-            f"An authorized reconnaissance assessment was conducted for <b>{inv.organization_name}</b>. "
-            f"A total of <b>{len(entities)}</b> digital assets were discovered, <b>{len(scan_ports)}</b> open ports were enumerated, "
-            f"and <b>{len(vuln_findings)}</b> vulnerability findings were identified. "
-            f"The composite 5-factor Exposure Score is <b>{score.total_score}/100</b>, placing the target organization "
-            f"in the <b>{score.tier.upper()}</b> exposure tier."
+            f"Investigation <b>{_safe_text(inv.name)}</b> for <b>{_safe_text(inv.organization_name)}</b> currently contains "
+            f"{len(entities)} entities, {len(scan_ports)} recorded ports, and {len(vuln_findings)} vulnerability findings. "
+            f"Collection status: passive {passive_state}; Nmap {nmap_state}; Greenbone {vuln_state}. "
+            f"Exposure assessment: <b>{_safe_text(score_label)}</b>. A low observed-data score or no findings does not establish that a target is secure."
         )
         story.append(Paragraph(summary_text, body_style))
 
         score_rows = [
-            [Paragraph("Factor", table_cell_bold), Paragraph("Weight", table_cell_bold), Paragraph("Score", table_cell_bold), Paragraph("Factor Contribution &amp; Meaning", table_cell_bold)],
+            [Paragraph("Observed-data factor", table_cell_bold), Paragraph("Weight", table_cell_bold), Paragraph("Score", table_cell_bold), Paragraph("Heuristic contribution", table_cell_bold)],
             [Paragraph("P — Public Footprint", table_cell), Paragraph("20%", table_cell), Paragraph(f"{score.P} / 100", body_bold), Paragraph("Publicly disclosed email addresses, employee names, and search metadata.", table_cell)],
-            [Paragraph("D — Domain Hygiene", table_cell), Paragraph("15%", table_cell), Paragraph(f"{score.D} / 100", body_bold), Paragraph("Discovered subdomains, DNS hierarchy, and SPF/DMARC policy status.", table_cell)],
+            [Paragraph("D — Domain Hygiene", table_cell), Paragraph("15%", table_cell), Paragraph(f"{score.D} / 100", body_bold), Paragraph("Domain/subdomain records and DNS evidence metadata containing a DMARC indicator.", table_cell)],
             [Paragraph("S — Service Exposure", table_cell), Paragraph("25%", table_cell), Paragraph(f"{score.S} / 100", body_bold), Paragraph("Enumerated open ports, with penalties for exposed databases/admin interfaces.", table_cell)],
             [Paragraph("V — Vulnerability Severity", table_cell), Paragraph("35%", table_cell), Paragraph(f"{score.V} / 100", body_bold), Paragraph("CVSS-rated vulnerabilities identified via Greenbone Vulnerability Manager.", table_cell)],
-            [Paragraph("C — Correlation Confidence", table_cell), Paragraph("5%", table_cell), Paragraph(f"{score.C} / 100", body_bold), Paragraph("Degree of corroboration across independent collectors and evidence records.", table_cell)],
-            [Paragraph("Composite Exposure", table_cell_bold), Paragraph("100%", table_cell_bold), Paragraph(f"<b>{score.total_score} / 100</b>", body_bold), Paragraph(f"<b>Risk Tier: {score.tier.upper()}</b> &middot; {score.reviewer_notes}", table_cell)],
+            [Paragraph("C — Evidence Diversity", table_cell), Paragraph("5%", table_cell), Paragraph(f"{score.C} / 100", body_bold), Paragraph("Heuristic from distinct evidence source names and evidence-record count; not graph correlation.", table_cell)],
+            [Paragraph("Observed-data composite", table_cell_bold), Paragraph("100%", table_cell_bold), Paragraph(f"<b>{score.total_score} / 100</b>", body_bold), Paragraph(f"<b>{_safe_text(score_label)}</b> &middot; {_safe_text(score.reviewer_notes)}", table_cell)],
         ]
-        t_score = Table(score_rows, colWidths=[120, 45, 60, 279])
-        t_score.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e2e8f0")),
-            ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#f1f5f9")),
-            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
-            ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
-            ("TOPPADDING", (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ]))
-        story.append(t_score)
+        if score.assessment_status in {"NOT_ASSESSED", "FAILED"}:
+            story.append(Paragraph(
+                "No composite score is presented because no assessment has completed successfully. "
+                "Stored historical observations, if any, remain listed in their sections below.", body_style
+            ))
+        else:
+            t_score = Table(score_rows, colWidths=[120, 45, 60, 279])
+            t_score.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e2e8f0")),
+                ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#f1f5f9")),
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]))
+            story.append(t_score)
         story.append(Spacer(1, 14))
 
         # =========================================================================
@@ -417,8 +456,8 @@ class InvestigationReportGenerator:
             for e in entities[:25]:  # Bound to top 25 for document readability
                 ev_count = len(e.evidence_ids) if e.evidence_ids else 0
                 ent_rows.append([
-                    Paragraph(e.entity_type, body_bold),
-                    Paragraph(e.canonical_value, code_style),
+                    Paragraph(_safe_text(e.entity_type), body_bold),
+                    Paragraph(_safe_text(e.canonical_value), code_style),
                     Paragraph(e.first_seen.strftime("%Y-%m-%d %H:%M"), table_cell),
                     Paragraph(f"{ev_count} evidence ref(s)", table_cell),
                 ])
@@ -453,10 +492,10 @@ class InvestigationReportGenerator:
                 state_style = body_bold if (p.state or "").lower() == "open" else table_cell
                 port_rows.append([
                     Paragraph(f"{p.port_number}/{p.protocol}", code_style),
-                    Paragraph((p.state or "unknown").upper(), state_style),
-                    Paragraph(p.service_name or "unknown", table_cell),
-                    Paragraph(p.product or "—", table_cell),
-                    Paragraph(p.version or "—", table_cell),
+                    Paragraph(_safe_text((p.state or "unknown").upper()), state_style),
+                    Paragraph(_safe_text(p.service_name or "unknown"), table_cell),
+                    Paragraph(_safe_text(p.product or "—"), table_cell),
+                    Paragraph(_safe_text(p.version or "—"), table_cell),
                 ])
             t_ports = Table(port_rows, colWidths=[80, 50, 90, 204, 80])
             t_ports.setStyle(TableStyle([
@@ -468,7 +507,10 @@ class InvestigationReportGenerator:
             ]))
             story.append(t_ports)
         else:
-            story.append(Paragraph("<i>No open ports or services enumerated by active Nmap reconnaissance.</i>", body_style))
+            story.append(Paragraph(
+                f"<i>Nmap assessment status: {nmap_state}. No port observations are recorded. This does not establish that no ports are exposed.</i>",
+                body_style,
+            ))
         story.append(Spacer(1, 14))
 
         # =========================================================================
@@ -500,17 +542,26 @@ class InvestigationReportGenerator:
                 host_port = f"{vf.host}:{vf.port}" if vf.port else vf.host
                 cve_str = ", ".join(vf.cve_references) if vf.cve_references else "—"
                 cvss_str = f"{vf.cvss_score:.1f}" if vf.cvss_score is not None else "—"
-                qod_str = f"{vf.qod}%" if vf.qod is not None else "—"
+                detail_parts = []
+                if vf.description:
+                    description = vf.description
+                    if len(description) > 1200:
+                        description = description[:1200] + " … [description truncated in PDF]"
+                    detail_parts.append(_safe_text(description))
+                detail_parts.append(f"Evidence: {_safe_text(vf.evidence_id or '—')}")
+                if vf.first_seen:
+                    detail_parts.append(f"Seen: {_safe_text(vf.first_seen.strftime('%Y-%m-%d %H:%M UTC'))}")
+                finding_name_and_detail = f"<b>{_safe_text(vf.name)}</b><br/><font size='6.8'>{'<br/>'.join(detail_parts)}</font>"
 
                 v_rows.append([
-                    Paragraph(vf.severity.upper(), s_style),
-                    Paragraph(vf.name, table_cell_bold),
-                    Paragraph(host_port, code_style),
+                    Paragraph(_safe_text((vf.severity or "unknown").upper()), s_style),
+                    Paragraph(finding_name_and_detail, finding_detail),
+                    Paragraph(_safe_text(host_port), code_style),
                     Paragraph(cvss_str, body_bold),
-                    Paragraph(cve_str, code_style),
-                    Paragraph(qod_str, table_cell),
+                    Paragraph(_safe_text(cve_str), code_style),
+                    Paragraph(f"{vf.qod}%" if vf.qod is not None else "—", table_cell),
                 ])
-            t_vulns = Table(v_rows, colWidths=[65, 179, 90, 45, 90, 35])
+            t_vulns = Table(v_rows, colWidths=[55, 165, 88, 45, 105, 46])
             t_vulns.setStyle(TableStyle([
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e2e8f0")),
                 ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
@@ -520,7 +571,13 @@ class InvestigationReportGenerator:
             ]))
             story.append(t_vulns)
         else:
-            story.append(Paragraph("<i>No vulnerability findings recorded by Greenbone assessment. Note: The absence of reported findings does not imply the target is free of vulnerabilities.</i>", body_style))
+            if vuln_state == "COMPLETED":
+                vuln_empty_message = "Greenbone assessment completed with no findings. The absence of reported findings does not imply the target is free of vulnerabilities."
+            elif vuln_state == "NOT PERFORMED":
+                vuln_empty_message = "Greenbone assessment was not performed for this investigation."
+            else:
+                vuln_empty_message = f"No vulnerability findings are recorded; Greenbone assessment status: {vuln_state}. This is not a clean assessment result."
+            story.append(Paragraph(f"<i>{_safe_text(vuln_empty_message)}</i>", body_style))
         story.append(Spacer(1, 14))
 
         # =========================================================================
@@ -537,7 +594,9 @@ class InvestigationReportGenerator:
         # Check vulnerability solutions
         for vf in vuln_findings:
             if vf.solution and len(remediation_items) < 5:
-                remediation_items.append(f"<b>Remediate {vf.name}:</b> {vf.solution}")
+                remediation_items.append(
+                    f"<b>Remediate {_safe_text(vf.name)}:</b> {_safe_text(vf.solution)}"
+                )
 
         # Default hygiene recommendations if few items
         if len(remediation_items) < 3:
@@ -557,35 +616,35 @@ class InvestigationReportGenerator:
             Paragraph("Target", table_cell_bold),
             Paragraph("Profile / Tool", table_cell_bold),
             Paragraph("Status", table_cell_bold),
-            Paragraph("Started", table_cell_bold),
+            Paragraph("Started / Completed (UTC)", table_cell_bold),
         ]]
         for cj in collection_jobs:
             job_rows.append([
                 Paragraph("Passive OSINT", table_cell),
-                Paragraph(cj.target, code_style),
-                Paragraph(cj.collector_name, table_cell),
-                Paragraph(cj.status, body_bold),
-                Paragraph(cj.started_at.strftime("%Y-%m-%d %H:%M") if cj.started_at else "—", table_cell),
+                Paragraph(_safe_text(cj.target), code_style),
+                Paragraph(_safe_text(cj.collector_name), table_cell),
+                Paragraph(_safe_text(cj.status), body_bold),
+                Paragraph(f"{cj.started_at.strftime('%Y-%m-%d %H:%M') if cj.started_at else '—'}<br/>End: {cj.completed_at.strftime('%Y-%m-%d %H:%M') if cj.completed_at else '—'}", table_cell),
             ])
         for nj in nmap_jobs:
             job_rows.append([
                 Paragraph("Active Nmap", table_cell),
-                Paragraph(nj.target, code_style),
-                Paragraph(nj.scan_profile, table_cell),
-                Paragraph(nj.status, body_bold),
-                Paragraph(nj.started_at.strftime("%Y-%m-%d %H:%M") if nj.started_at else "—", table_cell),
+                Paragraph(_safe_text(nj.target), code_style),
+                Paragraph(_safe_text(nj.scan_profile), table_cell),
+                Paragraph(_safe_text(nj.status), body_bold),
+                Paragraph(f"{nj.started_at.strftime('%Y-%m-%d %H:%M') if nj.started_at else '—'}<br/>End: {nj.completed_at.strftime('%Y-%m-%d %H:%M') if nj.completed_at else '—'}", table_cell),
             ])
         for vj in vuln_jobs:
             job_rows.append([
                 Paragraph("Greenbone GVM", table_cell),
-                Paragraph(vj.target, code_style),
-                Paragraph(vj.profile_id, table_cell),
-                Paragraph(vj.status, body_bold),
-                Paragraph(vj.started_at.strftime("%Y-%m-%d %H:%M") if vj.started_at else "—", table_cell),
+                Paragraph(_safe_text(vj.target), code_style),
+                Paragraph(_safe_text(vj.profile_id), table_cell),
+                Paragraph(_safe_text(vj.status), body_bold),
+                Paragraph(f"{vj.started_at.strftime('%Y-%m-%d %H:%M') if vj.started_at else '—'}<br/>End: {vj.completed_at.strftime('%Y-%m-%d %H:%M') if vj.completed_at else '—'}", table_cell),
             ])
 
         if len(job_rows) > 1:
-            t_jobs = Table(job_rows, colWidths=[90, 134, 110, 80, 90])
+            t_jobs = Table(job_rows, colWidths=[90, 124, 100, 70, 120])
             t_jobs.setStyle(TableStyle([
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e2e8f0")),
                 ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
@@ -601,25 +660,27 @@ class InvestigationReportGenerator:
         # =========================================================================
         # 11. Forensic Evidence Ledger & Cryptographic Provenance
         # =========================================================================
-        story.append(Paragraph("10. Forensic Evidence Ledger &amp; Cryptographic Provenance", h1_style))
+        story.append(Paragraph("10. Forensic Evidence Ledger &amp; Recorded Digest Metadata", h1_style))
         if evidence_list:
             ev_rows = [[
                 Paragraph("Evidence ID", table_cell_bold),
                 Paragraph("Source Tool", table_cell_bold),
                 Paragraph("Target", table_cell_bold),
                 Paragraph("Bytes", table_cell_bold),
-                Paragraph("SHA-256 Digest (Prefix)", table_cell_bold),
+                Paragraph("Recorded SHA-256 Prefix", table_cell_bold),
+                Paragraph("Collected (UTC)", table_cell_bold),
             ]]
             for ev in evidence_list[:15]:
                 hash_display = f"{ev.content_hash[:20]}..." if ev.content_hash else "None"
                 ev_rows.append([
-                    Paragraph(ev.id, code_style),
-                    Paragraph(ev.source_name, table_cell),
-                    Paragraph(ev.target, code_style),
+                    Paragraph(_safe_text(ev.id), code_style),
+                    Paragraph(_safe_text(ev.source_name), table_cell),
+                    Paragraph(_safe_text(ev.target), code_style),
                     Paragraph(str(ev.content_size_bytes), table_cell),
                     Paragraph(hash_display, code_style),
+                    Paragraph(ev.collected_at.strftime("%Y-%m-%d %H:%M") if ev.collected_at else "—", table_cell),
                 ])
-            t_ev = Table(ev_rows, colWidths=[100, 104, 110, 50, 140])
+            t_ev = Table(ev_rows, colWidths=[78, 90, 96, 40, 130, 70])
             t_ev.setStyle(TableStyle([
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e2e8f0")),
                 ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
@@ -642,7 +703,7 @@ class InvestigationReportGenerator:
             "&bull; <b>Temporal Scope:</b> Findings represent the digital attack surface observed at the time of execution.<br/>"
             "&bull; <b>Passive Boundary:</b> OSINT collection relied on third-party public registries and authoritative DNS caches.<br/>"
             "&bull; <b>Active Scans:</b> Port detection and vulnerability scanning were restricted exclusively to approved targets.<br/>"
-            "&bull; <b>Integrity Guarantee:</b> Report generation was verified from immutable database entities and forensic evidence hashes."
+            "&bull; <b>Evidence Integrity:</b> Stored evidence files are SHA-256 checked when retrieved; this PDF reports recorded digest prefixes and does not re-read or verify the evidence files. Hashes detect byte changes but do not make the database or files immutable."
         )
         story.append(Paragraph(caveat_text, body_style))
         story.append(Spacer(1, 12))

@@ -203,6 +203,21 @@ async def test_theharvester_mocked_execution():
 
 
 @pytest.mark.asyncio
+async def test_theharvester_does_not_expose_provider_keys_in_diagnostics():
+    collector = TheHarvesterCollector(binary_path="theHarvester")
+    with patch.object(collector, "is_available", return_value=True):
+        process = AsyncMock()
+        process.returncode = 1
+        process.communicate.return_value = (b"provider failed", b"API_KEY=secret-value")
+        with patch("asyncio.create_subprocess_exec", return_value=process):
+            result = await collector.collect("example.com")
+    diagnostics = str(result.source_metadata) + str(result.error_message)
+    assert result.status == "FAILED"
+    assert "secret-value" not in diagnostics
+    assert "API_KEY" not in diagnostics
+
+
+@pytest.mark.asyncio
 async def test_public_search_collector_unconfigured():
     collector = PublicSearchCollector(api_key=None)
     result = await collector.collect("example.com")

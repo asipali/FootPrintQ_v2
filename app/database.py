@@ -1,4 +1,4 @@
-"""SQLAlchemy 2.x database connectivity, session factory, and SQLite/PostgreSQL support."""
+"""SQLAlchemy 2.x database connectivity, session factory, and SQLite tuning."""
 
 from typing import Generator
 from sqlalchemy import create_engine, event, text
@@ -60,7 +60,7 @@ def get_db() -> Generator[Session, None, None]:
         yield session
     except Exception as exc:
         session.rollback()
-        logger.error(f"Database session rolled back due to error: {exc}")
+        logger.error("Database session rolled back due to %s", type(exc).__name__)
         raise
     finally:
         session.close()
@@ -74,7 +74,7 @@ def get_db_context() -> Generator[Session, None, None]:
         yield session
     except Exception as exc:
         session.rollback()
-        logger.error(f"Database session rolled back due to error: {exc}")
+        logger.error("Database session rolled back due to %s", type(exc).__name__)
         raise
     finally:
         session.close()

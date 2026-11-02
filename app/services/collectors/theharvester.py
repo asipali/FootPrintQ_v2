@@ -133,10 +133,14 @@ class TheHarvesterCollector(BaseCollector):
                 findings=findings,
                 source_metadata={
                     "exit_code": exit_code,
-                    "stderr_summary": stderr_text[:500] if stderr_text else None,
+                    # Provider stderr may echo configured API tokens. Persist only
+                    # a byte count; raw stdout remains in evidence as collector output.
+                    "stderr_summary": f"{len(stderr_data)} diagnostic bytes captured" if stderr_text else None,
                     "findings_count": len(findings),
                 },
-                error_message=stderr_text[:500] if exit_code != 0 and not findings else None,
+                error_category="PROVIDER_ERROR" if exit_code != 0 and not findings else None,
+                error_message=f"theHarvester exited with code {exit_code}; provider diagnostics withheld."
+                if exit_code != 0 and not findings else None,
             )
 
         except Exception as exc:

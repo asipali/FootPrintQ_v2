@@ -28,6 +28,10 @@ from app.models.investigation import InvestigationModel
 from app.models.recon import EntityModel, EvidenceModel
 from app.models.scan import ScanFindingHostModel, ScanFindingPortModel
 from app.models.vulnerability import VulnerabilityFindingModel
+from app.models.vulnerability import VulnerabilityScanJobModel
+from app.models.scan import ActiveScanJobModel
+from app.models.recon import CollectionJobModel
+from app.services.vuln.normalizer import generate_finding_deduplication_key
 
 
 @dataclass
@@ -43,6 +47,7 @@ class ExposureScoreBreakdown:
     calculation_timestamp: str
     reviewer_notes: str
     components_detail: Dict[str, Any]
+    assessment_status: str
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -87,6 +92,15 @@ class ExposureScorer:
             select(VulnerabilityFindingModel).where(VulnerabilityFindingModel.investigation_id == investigation_id)
         ).all()
 
+        jobs = [
+            *db.scalars(select(CollectionJobModel).where(CollectionJobModel.investigation_id == investigation_id)).all(),
+            *db.scalars(select(ActiveScanJobModel).where(ActiveScanJobModel.investigation_id == investigation_id)).all(),
+            *db.scalars(select(VulnerabilityScanJobModel).where(VulnerabilityScanJobModel.investigation_id == investigation_id)).all(),
+        ]
+        successful = any((job.status or "").upper() in {"COMPLETED", "PARTIAL"} for job in jobs)
+        running = any((job.status or "").upper() in {"QUEUED", "AUTHORIZING", "RUNNING", "PARSING", "CONFIGURING_TARGET", "CREATING_TASK", "RETRIEVING_REPORT"} for job in jobs)
+        assessment_status = "IN_PROGRESS" if running else "PARTIAL" if successful else "FAILED" if jobs else "NOT_ASSESSED"
+
         # 1. P: Public Footprint (0 - 100)
         emails = [e for e in entities if e.entity_type.lower() == "email"]
         persons = [e for e in entities if e.entity_type.lower() == "person"]
@@ -124,9 +138,17 @@ class ExposureScorer:
 
         # 4. V: Vulnerability Severity (0 - 100)
         raw_v = 0.0
+        unique_findings = {}
         for v_obj in vulns:
+            cves = sorted(v_obj.cve_references or [])
+            key = generate_finding_deduplication_key(
+                v_obj.host or "", v_obj.port, v_obj.protocol, v_obj.name or "",
+                v_obj.nvt_oid, cves[0] if cves else None,
+            )
+            unique_findings.setdefault(key, v_obj)
+        for v_obj in unique_findings.values():
             sev = (v_obj.severity or "info").lower()
-            qod_factor = (v_obj.qod or 100) / 100.0
+            qod_factor = min(100, max(0, 100 if v_obj.qod is None else v_obj.qod)) / 100.0
             if sev == "critical":
                 pts = 35
             elif sev == "high":
@@ -182,8 +204,10 @@ class ExposureScorer:
                 "public_entities_count": len(entities),
                 "emails_count": len(emails),
                 "open_ports_count": len(open_ports),
-                "vulnerabilities_count": len(vulns),
+                "vulnerabilities_count": len(unique_findings),
+                "vulnerability_records_count": len(vulns),
                 "evidence_records_count": len(evidence_list),
                 "distinct_sources_count": len(distinct_sources),
-            }
+            },
+            assessment_status=assessment_status,
         )

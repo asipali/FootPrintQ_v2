@@ -151,7 +151,7 @@ def test_pdf_generation_empty_investigation_handled_honestly(db_session: Session
     inv = InvestigationModel(
         id="inv-empty-01",
         name="Empty Baseline Scope",
-        organization_name="New Corp",
+        organization_name="New & Emerging <Research> Corp",
         description="Fresh campaign with no reconnaissance yet executed.",
         lead_investigator="Lead Analyst",
         status="active",
@@ -162,6 +162,7 @@ def test_pdf_generation_empty_investigation_handled_honestly(db_session: Session
     pdf_bytes = InvestigationReportGenerator.generate_pdf(
         investigation_id="inv-empty-01",
         db=db_session,
+        generated_by="Analyst <One>",
     )
 
     assert isinstance(pdf_bytes, bytes)
@@ -177,6 +178,7 @@ def test_pdf_download_endpoint_returns_file(authenticated_client: TestClient, db
         organization_name="Acme Inc",
         description="Testing report download streaming.",
         lead_investigator="Auditor",
+        owner_user_id="usr-test-analyst-01",
         status="active",
     )
     db_session.add(inv)

@@ -11,6 +11,7 @@ from app.models.investigation import InvestigationModel
 from app.models.recon import EvidenceModel
 from app.models.scan import ActiveScanJobModel, ScanFindingHostModel
 from app.models.user import UserModel
+from app.services.investigation_access import require_investigation_access
 from app.api.deps import get_current_user, require_permission
 from app.services.active.nmap_detector import get_nmap_detector
 from app.services.active.profiles import list_scan_profiles, get_scan_profile
@@ -80,6 +81,7 @@ async def dispatch_nmap_scan(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Investigation '{investigation_id}' not found.",
         )
+    investigation = require_investigation_access(investigation, current_user)
 
     if not investigation.active_scanning_enabled:
         raise HTTPException(
@@ -138,6 +140,7 @@ def list_investigation_scans(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Investigation '{investigation_id}' not found.",
         )
+    require_investigation_access(investigation, current_user)
 
     stmt = (
         select(ActiveScanJobModel)
@@ -166,6 +169,7 @@ def get_scan_job(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Scan job '{job_id}' not found.",
         )
+    require_investigation_access(db.get(InvestigationModel, job.investigation_id), current_user)
     return ScanJobResponse(**job.to_dict())
 
 
@@ -188,6 +192,7 @@ async def cancel_scan_job(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Scan job '{job_id}' not found.",
         )
+    require_investigation_access(db.get(InvestigationModel, job.investigation_id), current_user)
 
     if job.status not in ("QUEUED", "RUNNING", "AUTHORIZING"):
         raise HTTPException(
@@ -224,6 +229,7 @@ def get_scan_results(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Scan job '{job_id}' not found.",
         )
+    require_investigation_access(db.get(InvestigationModel, job.investigation_id), current_user)
 
     stmt = select(ScanFindingHostModel).where(ScanFindingHostModel.job_id == job_id)
     hosts = db.scalars(stmt).all()
@@ -294,6 +300,7 @@ def download_scan_xml(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Evidence for scan job '{job_id}' not found.",
         )
+    require_investigation_access(db.get(InvestigationModel, job.investigation_id), current_user)
 
     evidence = db.get(EvidenceModel, job.evidence_id)
     if not evidence or not evidence.raw_content_path:
@@ -304,12 +311,15 @@ def download_scan_xml(
 
     evidence_store = get_evidence_store()
     try:
-        content_bytes = evidence_store.retrieve_evidence_bytes(evidence.raw_content_path)
+        content_bytes, computed_hash = evidence_store.read_evidence(evidence.raw_content_path)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Evidence file missing on disk.",
         )
+
+    if computed_hash != evidence.content_hash:
+        raise HTTPException(status_code=500, detail="Nmap evidence integrity check failed.")
 
     return Response(
         content=content_bytes,
@@ -317,5 +327,7 @@ def download_scan_xml(
         headers={
             "Content-Disposition": f'attachment; filename="nmap_{job.id}.xml"',
             "X-Content-SHA256": evidence.content_hash,
+            "X-Computed-SHA256": computed_hash,
+            "X-Evidence-Integrity": "VERIFIED",
         },
     )

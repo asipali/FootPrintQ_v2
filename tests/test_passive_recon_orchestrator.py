@@ -11,7 +11,7 @@ from app.services.collectors.base import CollectorResult, DiscoveredFinding
 
 
 @pytest.fixture
-def sample_investigation_and_auth(db_session):
+def sample_investigation_and_auth(db_session, analyst_user):
     """Sets up an authorized investigation and target authorization record."""
     now = datetime.now(timezone.utc)
     inv = InvestigationModel(
@@ -20,6 +20,7 @@ def sample_investigation_and_auth(db_session):
         organization_name="Target Corp",
         description="Passive recon test",
         lead_investigator="Lead",
+        owner_user_id=analyst_user.id,
         owned_domains=["targetcorp.com"],
         approved_ips=[],
         approved_cidrs=[],
@@ -163,6 +164,40 @@ async def test_orchestrator_failure_isolation(db_session, sample_investigation_a
         statuses = {j["collector_name"]: j["status"] for j in jobs}
         assert statuses["dns_collector"] == "SUCCESS"
         assert statuses["failing_collector"] == "FAILED"
+
+
+@pytest.mark.asyncio
+async def test_unknown_requested_collector_is_rejected(db_session, sample_investigation_and_auth, analyst_user):
+    inv, _ = sample_investigation_and_auth
+    orchestrator = PassiveReconOrchestrator(db=db_session, investigation_id=inv.id, actor_user=analyst_user)
+    with pytest.raises(ValueError, match="Unsupported passive reconnaissance collector"):
+        await orchestrator.run(target="targetcorp.com", requested_collectors=["made-up"])
+    assert db_session.query(CollectionJobModel).filter_by(investigation_id=inv.id).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_evidence_storage_failure_marks_collector_failed_without_fake_evidence(
+    db_session, sample_investigation_and_auth, analyst_user
+):
+    inv, _ = sample_investigation_and_auth
+    orchestrator = PassiveReconOrchestrator(db=db_session, investigation_id=inv.id, actor_user=analyst_user)
+    collector = MagicMock()
+    collector.name = "dns_collector"
+    collector.source_type = "DNS"
+    collector.collect = AsyncMock(return_value=CollectorResult(
+        collector_name="dns_collector", source_type="DNS", source_name="dns",
+        target="targetcorp.com", status="SUCCESS", raw_content={"A": ["192.0.2.1"]},
+        content_format="json", findings=[DiscoveredFinding(entity_type="IP_ADDRESS", raw_value="192.0.2.1")],
+    ))
+    with patch.object(orchestrator, "_get_registered_collectors", return_value={"dns": collector}), \
+         patch.object(orchestrator.evidence_store, "store_evidence", side_effect=OSError("disk unavailable")):
+        result = await orchestrator.run(target="targetcorp.com")
+    assert result["status"] == "FAILED"
+    job = db_session.query(CollectionJobModel).filter_by(investigation_id=inv.id).one()
+    assert job.status == "FAILED"
+    assert job.error_category == "EVIDENCE_STORAGE_FAILED"
+    assert db_session.query(EvidenceModel).filter_by(investigation_id=inv.id).count() == 0
+    assert db_session.query(EntityModel).filter_by(investigation_id=inv.id).count() == 0
 
 
 def test_api_trigger_passive_recon_unauthorized_user_rejected(client, sample_investigation_and_auth, viewer_headers):

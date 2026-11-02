@@ -63,8 +63,6 @@ def test_target_authorization_validation_logic(db_session):
         approved_cidrs=[],
         active_targets=["authorized.com"],
     )
-    db_session.add(inv)
-
     user = UserModel(
         id="usr-recon-1",
         username="recon_analyst",
@@ -74,6 +72,9 @@ def test_target_authorization_validation_logic(db_session):
         is_active=True,
     )
     db_session.add(user)
+    db_session.flush()
+    inv.owner_user_id = user.id
+    db_session.add(inv)
     db_session.commit()
 
     # 1. Target out of scope -> denied

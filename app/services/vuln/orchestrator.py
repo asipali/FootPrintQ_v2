@@ -25,6 +25,7 @@ from app.integrations.greenbone_client import (
 from app.models.investigation import InvestigationModel
 from app.models.recon import EntityModel, EvidenceModel, TargetAuthorizationModel, ensure_utc, utc_now
 from app.models.vulnerability import VulnerabilityFindingModel, VulnerabilityScanJobModel
+from app.models.user import UserModel
 from app.services.evidence_store import EvidenceStore
 from app.services.target_authorization import classify_target, verify_target_authorization
 from app.services.vuln.normalizer import (
@@ -44,6 +45,16 @@ from app.services.vuln.xml_parser import (
 )
 
 logger = logging.getLogger("footprintiq.services.vuln.orchestrator")
+
+
+def _reported_progress(value: Any) -> Optional[int]:
+    """Accept only scanner-reported percentages and bound them to the schema range."""
+    if value is None:
+        return None
+    try:
+        return min(100, max(0, int(float(value))))
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 class VulnerabilityAssessmentError(Exception):
@@ -122,6 +133,28 @@ class VulnerabilityAssessmentOrchestrator:
                     pass
 
         return True, "Target authorized and validated.", resolved_ips
+
+    def _execution_authorization(
+        self, db: Session, job_id: str, requested_by: str,
+        investigation_id: str, target: str, profile_id: str,
+    ):
+        """Load the persisted job actor and repeat operation authorization at execution time."""
+        job = db.get(VulnerabilityScanJobModel, job_id)
+        if not job:
+            return False, "Assessment job no longer exists."
+        investigation = db.get(InvestigationModel, job.investigation_id)
+        actor = db.get(UserModel, requested_by)
+        if not investigation or not actor or not actor.is_active or actor.account_status != "active":
+            return False, "Investigation or active requesting user is unavailable."
+        if (job.requested_by != requested_by or job.investigation_id != investigation_id
+                or job.target != target or job.profile_id != profile_id):
+            return False, "Persisted assessment job identity does not match the execution request."
+        profile = validate_vuln_profile(job.profile_id)
+        allowed, reason, _ = self.resolve_and_revalidate_target(
+            db=db, investigation=investigation, target=job.target, profile=profile,
+            actor_user=actor,
+        )
+        return allowed, reason
 
     def create_assessment_job(
         self,
@@ -244,6 +277,27 @@ class VulnerabilityAssessmentOrchestrator:
                 )
             return
 
+        def recheck_execution_authorization() -> Optional[str]:
+            with ctx() as db:
+                allowed, reason = self._execution_authorization(
+                    db, job_id, requested_by, investigation_id, target, profile_id
+                )
+                if not allowed:
+                    self._update_job_status(
+                        db, job_id, "FAILED", error_category="AUTHORIZATION_REVOKED", error_msg=reason
+                    )
+                    log_audit_event(
+                        db=db, event_type="VULN_SCAN_DENIED", outcome="FAILURE",
+                        actor_id=requested_by, request_id=request_id, ip_address=client_ip,
+                        details={"job_id": job_id, "reason": reason},
+                    )
+                    return reason
+            return None
+
+        # Recheck after dispatch and again at the actual launch boundary.
+        if recheck_execution_authorization():
+            return
+
         # 1. Check Greenbone integration status
         availability = self.adapter.check_availability()
         status_val = availability.get("status")
@@ -285,8 +339,10 @@ class VulnerabilityAssessmentOrchestrator:
 
         try:
             # 2. Stage: CONFIGURING_TARGET
+            if recheck_execution_authorization():
+                return
             with ctx() as db:
-                self._update_job_status(db, job_id, "CONFIGURING_TARGET", progress=5)
+                self._update_job_status(db, job_id, "CONFIGURING_TARGET")
 
             gvm_target_id = self.adapter.create_scan_target(investigation_id=investigation_id, target=target)
 
@@ -298,7 +354,7 @@ class VulnerabilityAssessmentOrchestrator:
 
             # 3. Stage: CREATING_TASK
             with ctx() as db:
-                self._update_job_status(db, job_id, "CREATING_TASK", progress=15)
+                self._update_job_status(db, job_id, "CREATING_TASK")
 
             gvm_task_id = self.adapter.create_scan_task(
                 investigation_id=investigation_id,
@@ -315,7 +371,7 @@ class VulnerabilityAssessmentOrchestrator:
 
             # 4. Stage: RUNNING
             with ctx() as db:
-                self._update_job_status(db, job_id, "RUNNING", progress=20)
+                self._update_job_status(db, job_id, "RUNNING")
                 log_audit_event(
                     db=db,
                     event_type="VULN_SCAN_STARTED",
@@ -325,6 +381,12 @@ class VulnerabilityAssessmentOrchestrator:
                     details={"job_id": job_id, "gvm_task_id": gvm_task_id, "target": target},
                 )
 
+            if recheck_execution_authorization():
+                try:
+                    self.adapter.stop_scan_task(gvm_task_id)
+                except Exception as stop_exc:
+                    logger.warning("Unable to stop unauthorized GVM task %s: %s", gvm_task_id, stop_exc)
+                return
             gvm_report_id = self.adapter.start_scan_task(task_id=gvm_task_id)
 
             with ctx() as db:
@@ -373,7 +435,7 @@ class VulnerabilityAssessmentOrchestrator:
                     continue
 
                 task_status = task_info.get("status", "")
-                progress_val = task_info.get("progress", 0)
+                progress_val = _reported_progress(task_info.get("progress"))
                 if task_info.get("report_id"):
                     gvm_report_id = task_info["report_id"]
 
@@ -381,9 +443,10 @@ class VulnerabilityAssessmentOrchestrator:
                 with ctx() as db:
                     job = db.get(VulnerabilityScanJobModel, job_id)
                     if job:
-                        # Scale progress between 20% and 80%
-                        scaled_progress = 20 + int(progress_val * 0.6)
-                        job.progress = max(job.progress or 0, min(80, scaled_progress))
+                        # Greenbone reports its own task percentage; do not invent
+                        # progress for setup, report retrieval, or parsing stages.
+                        if progress_val is not None:
+                            job.progress = progress_val
                         if gvm_report_id and not job.gvm_report_id:
                             job.gvm_report_id = gvm_report_id
                         db.commit()
@@ -439,7 +502,7 @@ class VulnerabilityAssessmentOrchestrator:
 
             # 6. Stage: RETRIEVING_REPORT
             with ctx() as db:
-                self._update_job_status(db, job_id, "RETRIEVING_REPORT", progress=85)
+                self._update_job_status(db, job_id, "RETRIEVING_REPORT")
 
             report_id_to_fetch = gvm_report_id or gvm_task_id
             try:
@@ -465,7 +528,7 @@ class VulnerabilityAssessmentOrchestrator:
 
             # 7. Stage: PARSING
             with ctx() as db:
-                self._update_job_status(db, job_id, "PARSING", progress=90)
+                self._update_job_status(db, job_id, "PARSING")
 
             try:
                 parsed_report = parse_greenbone_xml_report(report_xml)

@@ -4,7 +4,7 @@ import pytest
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
-from app.database import get_db, check_database_connection
+from app.database import get_db, get_db_context, check_database_connection
 from app.models.investigation import InvestigationModel
 
 
@@ -13,6 +13,16 @@ def test_database_connection_probe(test_engine):
     is_ok, msg = check_database_connection(engine_override=test_engine)
     assert is_ok is True
     assert "operational" in msg.lower()
+
+
+def test_database_rollback_log_does_not_include_exception_text(caplog):
+    marker = "db-secret-marker"
+    with caplog.at_level("ERROR", logger="footprintiq.database"):
+        with pytest.raises(RuntimeError):
+            with get_db_context():
+                raise RuntimeError(marker)
+    assert marker not in caplog.text
+    assert "RuntimeError" in caplog.text
 
 
 def test_database_session_lifecycle(test_engine):

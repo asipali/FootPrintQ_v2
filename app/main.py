@@ -8,9 +8,11 @@ from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 from fastapi import FastAPI, Request, status, Depends, Form
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from urllib.parse import quote
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.templating import Jinja2Templates
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -112,6 +114,11 @@ def create_app(settings: Settings = None) -> FastAPI:
 
     # Store settings on app state
     app.state.settings = app_settings
+
+    allowed_hosts = list(app_settings.ALLOWED_HOSTS)
+    if app_settings.is_test and "testserver" not in allowed_hosts:
+        allowed_hosts.append("testserver")
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
     def default_dashboard_for(user: UserModel) -> str:
         return "/admin/dashboard" if user.role == ROLE_ADMINISTRATOR else "/dashboard"
@@ -267,14 +274,14 @@ def create_app(settings: Settings = None) -> FastAPI:
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
         req_id = getattr(request.state, "request_id", "unknown")
-        logger.info(f"Validation failure on {request.method} {request.url.path}: {exc.errors()}")
+        logger.info("Request validation failed on %s %s", request.method, request.url.path)
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content={
                 "error": {
                     "status_code": 422,
                     "message": "Request validation failed",
-                    "details": exc.errors(),
+                    "details": jsonable_encoder(exc.errors()),
                     "request_id": req_id
                 }
             },
@@ -284,7 +291,12 @@ def create_app(settings: Settings = None) -> FastAPI:
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
         req_id = getattr(request.state, "request_id", "unknown")
-        logger.error(f"Unhandled server error on {request.method} {request.url.path}: {exc}", exc_info=True)
+        logger.error(
+            "Unhandled server error on %s %s (%s)",
+            request.method,
+            request.url.path,
+            type(exc).__name__,
+        )
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={

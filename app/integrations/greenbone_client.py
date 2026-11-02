@@ -103,11 +103,22 @@ class GreenboneClient:
             return UnixSocketConnection(path=self.unix_socket, timeout=self.timeout)
 
         # Network TLS connection
-        return TLSConnection(
-            hostname=self.host,
-            port=self.port,
-            timeout=self.timeout,
-        )
+        if not self.tls_verify:
+            return TLSConnection(hostname=self.host, port=self.port, timeout=self.timeout)
+
+        # python-gvm's default TLSConnection currently disables certificate
+        # verification. Wrap its supported connection interface with a verified
+        # stdlib TLS socket and hostname validation when verification is enabled.
+        class VerifiedTLSConnection(TLSConnection):
+            def _new_socket(inner_self):
+                raw_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                context = ssl.create_default_context(cafile=settings.GVM_CA_FILE or None)
+                context.minimum_version = ssl.TLSVersion.TLSv1_2
+                wrapped = context.wrap_socket(raw_socket, server_hostname=inner_self.hostname)
+                wrapped.settimeout(inner_self._timeout)
+                return wrapped
+
+        return VerifiedTLSConnection(hostname=self.host, port=self.port, timeout=self.timeout)
 
     def check_status(self) -> Dict[str, Any]:
         """Validates configuration, connectivity, and authentication status against Greenbone.
@@ -137,7 +148,7 @@ class GreenboneClient:
                 except (GvmResponseError, GvmError) as auth_err:
                     err_msg = str(auth_err).lower()
                     if "auth" in err_msg or "password" in err_msg or "login" in err_msg or "400" in err_msg or "401" in err_msg:
-                        logger.warning("Greenbone authentication rejected for user '%s'", self.username)
+                        logger.warning("Greenbone authentication rejected for configured service account")
                         return {
                             "status": GreenboneConnectionStatus.AUTHENTICATION_FAILED.value,
                             "configured": True,
@@ -390,7 +401,9 @@ class GreenboneClient:
                 except ValueError:
                     progress = 0
 
-            report_elem = task_elem.find(".//last_report/report") or task_elem.find(".//current_report/report")
+            report_elem = task_elem.find(".//last_report/report")
+            if report_elem is None:
+                report_elem = task_elem.find(".//current_report/report")
             report_id = report_elem.get("id") if report_elem is not None else None
 
             return {
