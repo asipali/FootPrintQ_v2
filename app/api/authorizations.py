@@ -48,6 +48,24 @@ def create_target_authorization(
     target_type = classify_target(payload.target)
     if target_type != payload.target_type:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Target type does not match target syntax")
+
+    # Duplicate authorization check: guard against concurrent duplicate active tickets
+    norm_target = normalize_target(payload.target)
+    now_utc = ensure_utc(datetime.now(timezone.utc))
+    existing_active = db.scalars(
+        select(TargetAuthorizationModel).where(
+            TargetAuthorizationModel.investigation_id == investigation_id,
+            TargetAuthorizationModel.target == norm_target,
+            TargetAuthorizationModel.is_revoked == False,
+            TargetAuthorizationModel.valid_to > now_utc,
+        )
+    ).first()
+    if existing_active:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"An active authorization already exists for target '{payload.target}' (ID: {existing_active.id}). Revoke or update the existing authorization instead.",
+        )
+
     client_ip = request.client.host if request.client else None
     req_id = getattr(request.state, "request_id", None)
 
@@ -133,6 +151,19 @@ def revoke_target_authorization(
     if record.is_revoked:
         return {"message": "Authorization record was already revoked", "authorization_id": authorization_id}
     record.is_revoked = True
+
+    # Safeguard: cascade revocation to any unintended duplicate active records for same target
+    duplicate_records = db.scalars(
+        select(TargetAuthorizationModel).where(
+            TargetAuthorizationModel.investigation_id == investigation_id,
+            TargetAuthorizationModel.target == record.target,
+            TargetAuthorizationModel.id != record.id,
+            TargetAuthorizationModel.is_revoked == False,
+        )
+    ).all()
+    for dup in duplicate_records:
+        dup.is_revoked = True
+
     db.commit()
 
     client_ip = request.client.host if request.client else None
@@ -148,10 +179,14 @@ def revoke_target_authorization(
             "authorization_id": authorization_id,
             "investigation_id": investigation_id,
             "target": record.target,
+            "duplicates_revoked": [d.id for d in duplicate_records],
         },
     )
 
-    return {"message": "Authorization record successfully revoked", "authorization_id": authorization_id}
+    msg = "Authorization record successfully revoked"
+    if duplicate_records:
+        msg += f" (including {len(duplicate_records)} duplicate active authorization(s))"
+    return {"message": msg, "authorization_id": authorization_id}
 
 
 @router.patch(

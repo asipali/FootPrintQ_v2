@@ -33,11 +33,13 @@ def test_settings(tmp_path_factory) -> Settings:
         APP_ENV="test",
         DEBUG=True,
         DATABASE_URL=f"sqlite:///{db_path}",
+        STORAGE_BACKEND="filesystem",
         EVIDENCE_STORAGE_PATH=str(temp_dir / "evidence_storage"),
         SECRET_KEY="test-secret-key-for-unit-testing-only-12345",
         LOG_LEVEL="WARNING",
         LOG_FORMAT="standard",
         DEMO_ACCOUNTS_ENABLED=False,
+        GVM_HOST="",
     )
 
 
@@ -62,6 +64,8 @@ def isolated_evidence_storage(
         lambda: isolated_test_settings,
     )
     monkeypatch.setattr(evidence_store_module, "_default_store", None)
+    from app.config import settings as global_settings
+    monkeypatch.setattr(global_settings, "GVM_HOST", None)
     # The app lifespan otherwise probes the module-global engine, which points
     # at the user's configured database. Keep even startup probes on test DB.
     monkeypatch.setattr(
@@ -126,6 +130,9 @@ def client(isolated_test_settings: Settings, db_session: Session) -> Generator[T
             pass
 
     app.dependency_overrides[get_db] = override_get_db
+
+    from app.core.rate_limit import auth_rate_limiter
+    auth_rate_limiter.reset()
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client

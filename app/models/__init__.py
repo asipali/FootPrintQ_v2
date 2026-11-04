@@ -18,6 +18,8 @@ from app.models.vulnerability import (
     VulnerabilityScanJobModel,
     VulnerabilityFindingModel,
 )
+from app.models.correlation import CorrelationRecordModel
+from app.models.exposure_score import ExposureScoreModel
 from app.models.job import (
     JobModel,
     JOB_STATUS_QUEUED,
@@ -45,6 +47,8 @@ __all__ = [
     "ScanFindingPortModel",
     "VulnerabilityScanJobModel",
     "VulnerabilityFindingModel",
+    "CorrelationRecordModel",
+    "ExposureScoreModel",
     "JobModel",
     "JOB_STATUS_QUEUED",
     "JOB_STATUS_CLAIMED",

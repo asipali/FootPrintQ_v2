@@ -1,57 +1,139 @@
 {% extends "base.html" %}
 
-{% block title %}Investigator Approval Management &middot; FootprintIQ{% endblock %}
+{% block title %}Investigator Approval &amp; Account Management &middot; FootprintIQ{% endblock %}
 
 {% block content %}
-<section class="card" style="max-width: 1100px; margin: 2rem auto; padding: 1.5rem;">
-  <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 1.25rem;">
+<div style="max-width: 1100px; margin: 1.5rem auto;">
+  <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 1.5rem;">
     <div>
-      <h2 style="margin: 0 0 0.35rem;">Investigator Approval Management</h2>
-      <p style="margin: 0; color: var(--text-secondary);">Review new investigator registrations before granting application access.</p>
+      <h2 style="margin: 0 0 0.35rem; font-size: 1.35rem; font-weight: 700;">Investigator Approval Management</h2>
+      <p style="margin: 0; color: var(--text-secondary); font-size: 0.85rem;">Review pending investigator applications and administer active accounts.</p>
     </div>
-    <span class="badge badge-amber">{{ pending_users|length }} pending</span>
+    <div style="display: flex; gap: 0.5rem;">
+      <span class="badge badge-amber">{{ pending_users|length }} pending</span>
+      <span class="badge badge-emerald">{{ active_investigators|length }} active</span>
+    </div>
   </div>
 
   {% if message %}
-  <div class="card" role="status" style="margin-bottom: 1rem; padding: 0.8rem; color: var(--text-primary);">{{ message }}</div>
+  <div class="card" role="status" style="margin-bottom: 1.25rem; padding: 0.85rem 1.25rem; border-left: 4px solid var(--color-primary); color: var(--text-primary); font-size: 0.85rem;">
+    {{ message }}
+  </div>
   {% endif %}
 
-  {% if pending_users %}
-  <div style="overflow-x: auto;">
-    <table style="width: 100%; border-collapse: collapse; text-align: left;">
-      <thead>
-        <tr style="border-bottom: 1px solid var(--border-subtle);">
-          <th style="padding: 0.75rem;">Investigator</th>
-          <th style="padding: 0.75rem;">Email</th>
-          <th style="padding: 0.75rem;">Registration date</th>
-          <th style="padding: 0.75rem;">Status</th>
-          <th style="padding: 0.75rem;">Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for user in pending_users %}
-        <tr style="border-bottom: 1px solid var(--border-subtle);">
-          <td style="padding: 0.75rem;">{{ user.full_name or user.username }}</td>
-          <td style="padding: 0.75rem;">{{ user.email }}</td>
-          <td style="padding: 0.75rem;">{{ user.created_at.strftime('%Y-%m-%d %H:%M UTC') }}</td>
-          <td style="padding: 0.75rem;"><span class="badge badge-amber">{{ user.account_status }}</span></td>
-          <td style="padding: 0.75rem; white-space: nowrap;">
-            <form method="post" action="/admin/investigators/{{ user.id }}/approve" style="display: inline;">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <button type="submit" class="btn btn-primary">Approve</button>
-            </form>
-            <form method="post" action="/admin/investigators/{{ user.id }}/reject" style="display: inline;" onsubmit="return confirm('Reject this investigator registration?');">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <button type="submit" class="btn btn-secondary">Reject</button>
-            </form>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  {% else %}
-  <p style="color: var(--text-secondary);">There are no investigator registrations awaiting approval.</p>
-  {% endif %}
-</section>
+  <!-- SECTION 1: Pending Approvals -->
+  <section class="card" style="margin-bottom: 2rem; padding: 1.25rem;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.75rem;">
+      <h3 style="margin: 0; font-size: 1.05rem; font-weight: 600;">Pending Approvals</h3>
+      <span class="badge badge-amber">{{ pending_users|length }} awaiting review</span>
+    </div>
+
+    {% if pending_users %}
+    <div style="overflow-x: auto;">
+      <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.83rem;">
+        <thead>
+          <tr style="border-bottom: 1px solid var(--border-subtle); color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase;">
+            <th style="padding: 0.75rem;">Investigator</th>
+            <th style="padding: 0.75rem;">Email</th>
+            <th style="padding: 0.75rem;">Registration Date</th>
+            <th style="padding: 0.75rem;">Approval Status</th>
+            <th style="padding: 0.75rem;">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for user in pending_users %}
+          <tr style="border-bottom: 1px solid var(--border-subtle);">
+            <td style="padding: 0.75rem; font-weight: 600;">{{ user.full_name or user.username }}</td>
+            <td style="padding: 0.75rem; font-family: var(--font-mono); font-size: 0.78rem;">{{ user.email }}</td>
+            <td style="padding: 0.75rem; color: var(--text-secondary);">{{ user.created_at.strftime('%Y-%m-%d %H:%M UTC') if user.created_at else 'N/A' }}</td>
+            <td style="padding: 0.75rem;"><span class="badge badge-amber">{{ user.account_status }}</span></td>
+            <td style="padding: 0.75rem; white-space: nowrap;">
+              <form method="post" action="/admin/investigators/{{ user.id }}/approve" style="display: inline;" onsubmit="return confirm('Approve {{ user.username }} as active investigator?');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="btn btn-primary" style="padding: 0.25rem 0.65rem; font-size: 0.78rem;">Approve</button>
+              </form>
+              <form method="post" action="/admin/investigators/{{ user.id }}/reject" style="display: inline;" onsubmit="return confirm('Reject {{ user.username }} registration?');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="btn btn-secondary" style="padding: 0.25rem 0.65rem; font-size: 0.78rem;">Reject</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div style="padding: 1.5rem; text-align: center; color: var(--text-secondary); font-size: 0.85rem;">
+      <p style="margin: 0;">No investigator registrations awaiting approval.</p>
+    </div>
+    {% endif %}
+  </section>
+
+  <!-- SECTION 2: Active Investigators -->
+  <section class="card" style="padding: 1.25rem;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.75rem;">
+      <h3 style="margin: 0; font-size: 1.05rem; font-weight: 600;">Active &amp; Approved Investigators</h3>
+      <span class="badge badge-emerald">{{ active_investigators|length }} registered</span>
+    </div>
+
+    {% if active_investigators %}
+    <div style="overflow-x: auto;">
+      <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.83rem;">
+        <thead>
+          <tr style="border-bottom: 1px solid var(--border-subtle); color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase;">
+            <th style="padding: 0.75rem;">Investigator</th>
+            <th style="padding: 0.75rem;">Email</th>
+            <th style="padding: 0.75rem;">Role</th>
+            <th style="padding: 0.75rem;">Approval Status</th>
+            <th style="padding: 0.75rem;">Account State</th>
+            <th style="padding: 0.75rem;">Approved Date</th>
+            <th style="padding: 0.75rem;">Approved By</th>
+            <th style="padding: 0.75rem;">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for user in active_investigators %}
+          <tr style="border-bottom: 1px solid var(--border-subtle);">
+            <td style="padding: 0.75rem; font-weight: 600;">{{ user.full_name or user.username }}</td>
+            <td style="padding: 0.75rem; font-family: var(--font-mono); font-size: 0.78rem;">{{ user.email }}</td>
+            <td style="padding: 0.75rem;"><span class="mono" style="font-size: 0.75rem; text-transform: uppercase;">{{ user.role }}</span></td>
+            <td style="padding: 0.75rem;"><span class="badge badge-emerald">{{ user.account_status }}</span></td>
+            <td style="padding: 0.75rem;">
+              {% if user.is_active %}
+                <span class="badge badge-emerald">Active</span>
+              {% else %}
+                <span class="badge badge-amber">Inactive</span>
+              {% endif %}
+            </td>
+            <td style="padding: 0.75rem; color: var(--text-secondary);">
+              {{ user.approved_at.strftime('%Y-%m-%d %H:%M UTC') if user.approved_at else 'Pre-provisioned' }}
+            </td>
+            <td style="padding: 0.75rem; color: var(--text-secondary);">
+              {{ admin_lookup.get(user.approved_by_id) if (user.approved_by_id and admin_lookup) else ('System Admin' if user.approved_at else 'System Seed') }}
+            </td>
+            <td style="padding: 0.75rem; white-space: nowrap;">
+              {% if user.is_active %}
+              <form method="post" action="/admin/investigators/{{ user.id }}/deactivate" style="display: inline;" onsubmit="return confirm('Deactivate investigator account {{ user.username }}?');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="btn btn-secondary" style="padding: 0.25rem 0.65rem; font-size: 0.78rem;">Deactivate</button>
+              </form>
+              {% else %}
+              <form method="post" action="/admin/investigators/{{ user.id }}/activate" style="display: inline;" onsubmit="return confirm('Re-activate investigator account {{ user.username }}?');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="btn btn-primary" style="padding: 0.25rem 0.65rem; font-size: 0.78rem;">Activate</button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div style="padding: 1.5rem; text-align: center; color: var(--text-secondary); font-size: 0.85rem;">
+      <p style="margin: 0;">No active investigator accounts found.</p>
+    </div>
+    {% endif %}
+  </section>
+</div>
 {% endblock %}

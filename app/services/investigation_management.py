@@ -8,6 +8,11 @@ from app.core.security import ROLE_ADMINISTRATOR
 from app.models.investigation import InvestigationModel
 from app.models.user import UserModel
 from app.schemas.investigation import InvestigationUpdate
+from app.services.workflow.state_machine import (
+    validate_transition,
+    STATUS_ARCHIVED,
+    normalize_status,
+)
 
 
 def update_investigation_record(
@@ -22,7 +27,7 @@ def update_investigation_record(
     changes = payload.model_dump(exclude_unset=True)
     if not changes:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="At least one field must be provided.")
-    if investigation.status == "archived":
+    if normalize_status(investigation.status) == STATUS_ARCHIVED:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Archived investigations cannot be modified.")
 
     requested_owner = changes.pop("owner_user_id", ...)
@@ -37,13 +42,10 @@ def update_investigation_record(
         investigation.owner_user_id = requested_owner
 
     new_status = changes.get("status")
-    if new_status and new_status != investigation.status:
-        allowed_transitions = {"active": {"completed", "archived"}, "completed": {"archived"}}
-        if new_status not in allowed_transitions.get(investigation.status, set()):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Invalid investigation status transition: {investigation.status} -> {new_status}.",
-            )
+    if new_status and normalize_status(new_status) != normalize_status(investigation.status):
+        validate_transition(investigation.status, new_status)
+        investigation.status = normalize_status(new_status)
+        changes.pop("status", None)
 
     scope = changes.pop("scope", None)
     for field, value in changes.items():

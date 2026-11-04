@@ -331,7 +331,10 @@ def download_scan_xml(
 
     evidence_store = get_evidence_store()
     try:
-        content_bytes, computed_hash = evidence_store.read_evidence(evidence.raw_content_path)
+        content_bytes, computed_hash = evidence_store.read_evidence(
+            evidence.raw_content_path,
+            backend=evidence.storage_backend,
+        )
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

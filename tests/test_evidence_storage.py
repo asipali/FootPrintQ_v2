@@ -104,3 +104,40 @@ def test_evidence_read_reports_tampered_content_hash(tmp_path):
 
     assert content == b"tampered"
     assert computed_hash != original_hash
+
+
+
+def test_evidence_store_exists_and_metadata_and_delete(tmp_path):
+    store = EvidenceStore(base_path=str(tmp_path))
+    inv_id = "inv-meta-test"
+    evi_id = "evi-meta-999"
+    payload = "Important forensic artifact"
+
+    rel_path, sha_hash, size_bytes = store.store_evidence(
+        investigation_id=inv_id,
+        evidence_id=evi_id,
+        source_type="HTTP",
+        content=payload,
+    )
+
+    # 1. Test existence
+    assert store.evidence_exists(rel_path) is True
+    assert store.evidence_exists(f"{inv_id}/non_existent.txt") is False
+    assert store.evidence_exists("../outside.txt") is False
+
+    # 2. Test metadata
+    meta = store.get_evidence_metadata(rel_path)
+    assert meta.key == rel_path
+    assert meta.content_hash == sha_hash
+    assert meta.size_bytes == size_bytes
+    assert meta.backend == "filesystem"
+
+    # 3. Test streaming read
+    chunks = list(store.read_evidence_stream(rel_path, chunk_size=4))
+    reconstructed = b"".join(chunks)
+    assert reconstructed == payload.encode("utf-8")
+
+    # 4. Test delete
+    assert store.delete_evidence(rel_path) is True
+    assert store.evidence_exists(rel_path) is False
+    assert store.delete_evidence(rel_path) is False

@@ -17,6 +17,13 @@ class NmapXmlParseError(Exception):
     pass
 
 
+# Formal Nmap host reachability states
+HOST_CONFIRMED_UP = "HOST_CONFIRMED_UP"
+HOST_ASSUMED_UP = "HOST_ASSUMED_UP"
+HOST_UNREACHABLE = "HOST_UNREACHABLE"
+HOST_UNKNOWN = "HOST_UNKNOWN"
+
+
 @dataclass
 class ParsedService:
     name: str = "unknown"
@@ -32,7 +39,7 @@ class ParsedService:
 class ParsedPort:
     port: int
     protocol: str  # "tcp" or "udp"
-    state: str  # "open", "closed", "filtered"
+    state: str  # "open", "closed", "filtered", "open|filtered", "unfiltered", etc.
     reason: Optional[str] = None
     service: ParsedService = field(default_factory=ParsedService)
 
@@ -41,7 +48,10 @@ class ParsedPort:
 class ParsedHost:
     address: str
     address_type: str = "ipv4"  # "ipv4", "ipv6", or "mac"
-    status: str = "up"  # "up" or "down"
+    status: str = "up"  # raw status: "up" or "down"
+    status_reason: Optional[str] = None  # e.g. "syn-ack", "user-set", "no-response"
+    reachability_state: str = HOST_UNKNOWN  # HOST_CONFIRMED_UP, HOST_ASSUMED_UP, HOST_UNREACHABLE, HOST_UNKNOWN
+    skipped_host_discovery: bool = False
     hostnames: List[str] = field(default_factory=list)
     ports: List[ParsedPort] = field(default_factory=list)
     os_match: Optional[str] = None
@@ -189,11 +199,35 @@ def parse_nmap_xml(xml_content: str) -> ParsedNmapResult:
                 if acc_str and acc_str.isdigit():
                     os_match_accuracy = int(acc_str)
 
+        status_reason = status_elem.get("reason", "") if status_elem is not None else ""
+        pn_flag = ("-pn" in args.lower()) or ("-p0" in args.lower()) or (status_reason.lower() == "user-set")
+        skipped_host_discovery = bool(pn_flag)
+
+        # Check if any port sent back an active network packet (open or closed RST)
+        has_responding_ports = any(p.state in ("open", "closed", "unfiltered") for p in ports)
+
+        # Determine authoritative reachability state
+        if status_val.lower() == "down" or status_reason in ("no-response", "host-unreach", "network-unreach"):
+            reachability_state = HOST_UNREACHABLE
+        elif status_val.lower() == "up":
+            if has_responding_ports or status_reason in ("syn-ack", "arp-response", "echo-reply", "conn-refused", "timestamp-reply"):
+                reachability_state = HOST_CONFIRMED_UP
+            elif skipped_host_discovery:
+                # -Pn was set, and zero ports responded with affirmative TCP packets: host is merely assumed up
+                reachability_state = HOST_ASSUMED_UP
+            else:
+                reachability_state = HOST_CONFIRMED_UP
+        else:
+            reachability_state = HOST_UNKNOWN
+
         hosts.append(
             ParsedHost(
                 address=ip_addr,
                 address_type=addr_type,
                 status=status_val,
+                status_reason=status_reason or None,
+                reachability_state=reachability_state,
+                skipped_host_discovery=skipped_host_discovery,
                 hostnames=hostnames,
                 ports=ports,
                 os_match=os_match_name,

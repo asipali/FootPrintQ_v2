@@ -135,7 +135,11 @@ def verify_target_authorization(
     Returns:
         (is_authorized, reason_message)
     """
-    if actor_user and not actor_id:
+    if hasattr(actor_id, "id") and not isinstance(actor_id, str):
+        if not actor_user:
+            actor_user = actor_id
+        actor_id = getattr(actor_id, "id", None)
+    elif actor_user and not actor_id:
         actor_id = getattr(actor_user, "id", None)
 
     # Owner checks are repeated here at the authoritative authorization boundary,
@@ -156,8 +160,10 @@ def verify_target_authorization(
         )
         return False, reason
 
-    if investigation.status != "active":
-        reason = f"Investigation is {investigation.status}; target operations require an active investigation."
+    from app.services.workflow.state_machine import EXECUTION_PERMITTED_STATUSES, normalize_status
+    norm_status = normalize_status(investigation.status)
+    if norm_status not in EXECUTION_PERMITTED_STATUSES:
+        reason = f"Investigation is in '{investigation.status}' status; target operations require an operational investigation (ready, running, or active)."
         log_audit_event(db=db, event_type="TARGET_AUTHORIZATION_REJECTED", outcome="FAILURE",
                         actor_id=actor_id, request_id=request_id, ip_address=client_ip,
                         details={"investigation_id": investigation.id, "target": target, "reason": reason})

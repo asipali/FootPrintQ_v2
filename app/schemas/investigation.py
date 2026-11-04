@@ -5,6 +5,12 @@ from typing import List, Optional, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
+from app.services.workflow.state_machine import (
+    VALID_INVESTIGATION_STATUSES,
+    normalize_status as normalize_inv_status,
+)
+
+
 class ScopeSchema(BaseModel):
     """Scope target lists defining investigation boundaries."""
     owned_domains: List[str] = Field(default_factory=list, description="Apex domains owned by target organization")
@@ -25,10 +31,15 @@ class ScopeSchema(BaseModel):
         }
         normalized = []
         for value in values:
-            kind = classify_target(value)
+            clean_value = value.strip()
+            if info.field_name == "owned_domains" and (clean_value.startswith("http://") or clean_value.startswith("https://")):
+                from urllib.parse import urlparse
+                parsed = urlparse(clean_value)
+                clean_value = parsed.hostname or clean_value
+            kind = classify_target(clean_value)
             if kind not in field_types[info.field_name]:
                 raise ValueError(f"Invalid {info.field_name} target: {value}")
-            normalized.append(normalize_target(value))
+            normalized.append(normalize_target(clean_value))
         if len(set(normalized)) != len(normalized):
             raise ValueError(f"Duplicate values are not allowed in {info.field_name}")
         return normalized
@@ -37,14 +48,24 @@ class ScopeSchema(BaseModel):
 class InvestigationBase(BaseModel):
     name: str = Field(..., min_length=3, max_length=128, description="Investigation title")
     organization_name: str = Field(..., min_length=2, max_length=128, description="Target company or entity")
-    description: str = Field(..., min_length=5, max_length=1024, description="Scope and purpose description")
+    description: str = Field(..., min_length=1, max_length=1024, description="Scope and purpose description")
     lead_investigator: str = Field(..., min_length=2, max_length=128, description="Primary analyst name")
     team_members: List[str] = Field(default_factory=list, description="Secondary analysts")
-    status: Literal["active", "completed", "archived"] = Field(default="active", description="Campaign status")
+    status: str = Field(default="active", description="Campaign status")
     scope: ScopeSchema = Field(default_factory=ScopeSchema)
     active_scanning_enabled: bool = Field(default=False)
     authorization_reference: Optional[str] = Field(default=None, max_length=128)
     authorization_expiry: Optional[datetime] = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_status(cls, value: str) -> str:
+        if isinstance(value, str):
+            v = normalize_inv_status(value)
+            if v in VALID_INVESTIGATION_STATUSES:
+                return v
+            return value.strip().lower()
+        return value
 
     @field_validator("name", "organization_name", "description", "lead_investigator")
     @classmethod
@@ -59,9 +80,10 @@ class InvestigationCreate(InvestigationBase):
     id: Optional[str] = Field(default=None, description="Optional custom identifier (e.g., inv-northstar-01)")
 
     @model_validator(mode="after")
-    def new_investigations_start_active(self):
-        if self.status != "active":
-            raise ValueError("New investigations must start in active status")
+    def new_investigations_start_valid(self):
+        valid_start = {"active", "ready", "draft", "pending_authorization"}
+        if self.status not in valid_start:
+            raise ValueError(f"New investigations must start in an initial state ({', '.join(sorted(valid_start))}), got '{self.status}'")
         return self
 
 
@@ -82,7 +104,7 @@ class InvestigationUpdate(BaseModel):
     organization_name: Optional[str] = Field(default=None, min_length=2, max_length=128)
     description: Optional[str] = Field(default=None, min_length=5, max_length=1024)
     team_members: Optional[List[str]] = None
-    status: Optional[Literal["active", "completed", "archived"]] = None
+    status: Optional[str] = None
     scope: Optional[ScopeSchema] = None
     active_scanning_enabled: Optional[bool] = None
     authorization_reference: Optional[str] = Field(default=None, max_length=128)
@@ -98,3 +120,13 @@ class InvestigationUpdate(BaseModel):
         if not value:
             raise ValueError("Value cannot be blank")
         return value
+
+
+class WorkflowStartRequest(BaseModel):
+    target: Optional[str] = None
+    scan_profile_id: Optional[str] = "service_inventory"
+    vuln_profile_id: Optional[str] = "full_and_fast"
+
+
+class WorkflowCancelRequest(BaseModel):
+    reason: Optional[str] = "Cancelled by user"

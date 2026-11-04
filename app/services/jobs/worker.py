@@ -47,7 +47,7 @@ class DurableJobWorker:
         settings = get_settings()
         self.worker_id = worker_id or f"worker-{socket.gethostname()[:12]}-{uuid.uuid4().hex[:8]}"
         self.max_concurrency = max_concurrency or settings.NMAP_MAX_CONCURRENCY
-        self.supported_types = supported_types or ["NMAP_SCAN", "VULN_SCAN", "PASSIVE_RECON"]
+        self.supported_types = supported_types or ["NMAP_SCAN", "VULN_SCAN", "PASSIVE_RECON", "WORKFLOW_ORCHESTRATION"]
         self.queue = get_job_queue()
         self._running = False
         self._stop_event = asyncio.Event()

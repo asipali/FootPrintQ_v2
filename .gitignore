@@ -62,6 +62,7 @@ Thumbs.db
 logs/
 *.log
 reports/
+!docs/reports/
 exports/
 
 # Legacy frontend local state (preserved)

@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.database import get_db, check_database_connection
 from app.schemas.health import LivenessResponse, ReadinessResponse, ApiHealthResponse
+from app.storage.factory import get_storage_adapter
 from app.logging_config import get_logger
 
 logger = get_logger("footprintiq.api.health")
@@ -34,7 +35,8 @@ def get_liveness():
     description="Verifies the operational status of the application and its required database connection."
 )
 def get_readiness(db: Session = Depends(get_db)):
-    """Verifies that the database engine can execute queries successfully."""
+    """Verifies that the database engine and evidence storage backend are operational."""
+    settings = get_settings()
     is_connected, message = check_database_connection(db)
 
     if not is_connected:
@@ -48,10 +50,28 @@ def get_readiness(db: Session = Depends(get_db)):
             }
         )
 
+    # Storage readiness probe
+    storage_adapter = get_storage_adapter(settings=settings)
+    storage_health = storage_adapter.health_check()
+
+    if not storage_health.is_healthy:
+        logger.warning("Storage readiness probe warning: %s", storage_health.details)
+        if settings.APP_ENV in {"staging", "production"} and settings.STORAGE_BACKEND == "seaweedfs":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "status": "not_ready",
+                    "database": "connected",
+                    "storage": "disconnected",
+                    "details": f"Storage backend '{settings.STORAGE_BACKEND}' is unavailable in {settings.APP_ENV} mode."
+                }
+            )
+
     return ReadinessResponse(
-        status="ready",
+        status="ready" if storage_health.is_healthy else "degraded",
         database="connected",
-        details="Database operational."
+        storage="connected" if storage_health.is_healthy else "degraded",
+        details="Database operational." if storage_health.is_healthy else f"Database operational. Storage degraded: {storage_health.details}",
     )
 
 

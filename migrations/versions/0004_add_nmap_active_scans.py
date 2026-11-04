@@ -17,6 +17,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    is_mssql = op.get_bind().dialect.name == "mssql"
     # 1. active_scan_jobs table
     op.create_table(
         "active_scan_jobs",
@@ -38,7 +39,7 @@ def upgrade() -> None:
         sa.Column("cancellation_reason", sa.Text(), nullable=True),
         sa.Column("command_summary", sa.String(length=255), nullable=True),
         sa.ForeignKeyConstraint(["investigation_id"], ["investigations.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["evidence_id"], ["evidence.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(["evidence_id"], ["evidence.id"], ondelete="NO ACTION" if is_mssql else "SET NULL"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_active_scan_jobs_id"), "active_scan_jobs", ["id"], unique=False)
@@ -62,7 +63,7 @@ def upgrade() -> None:
         sa.Column("os_match", sa.String(length=255), nullable=True),
         sa.Column("evidence_id", sa.String(length=64), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.ForeignKeyConstraint(["investigation_id"], ["investigations.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["investigation_id"], ["investigations.id"], ondelete="NO ACTION" if is_mssql else "CASCADE"),
         sa.ForeignKeyConstraint(["job_id"], ["active_scan_jobs.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
@@ -90,7 +91,7 @@ def upgrade() -> None:
         sa.Column("confidence", sa.Integer(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["host_id"], ["scan_hosts.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["job_id"], ["active_scan_jobs.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["job_id"], ["active_scan_jobs.id"], ondelete="NO ACTION" if is_mssql else "CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_scan_ports_id"), "scan_ports", ["id"], unique=False)

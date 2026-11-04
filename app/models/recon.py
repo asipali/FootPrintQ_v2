@@ -131,6 +131,7 @@ class EvidenceModel(Base):
     target: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     collection_status: Mapped[str] = mapped_column(String(32), default="SUCCESS", nullable=False)
     raw_content_path: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    storage_backend: Mapped[str] = mapped_column(String(32), default="filesystem", server_default="filesystem", nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)  # SHA-256
     content_size_bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     source_metadata: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
@@ -146,6 +147,7 @@ class EvidenceModel(Base):
             "target": self.target,
             "collection_status": self.collection_status,
             "raw_content_path": self.raw_content_path,
+            "storage_backend": self.storage_backend,
             "content_hash": self.content_hash,
             "content_size_bytes": self.content_size_bytes,
             "source_metadata": self.source_metadata or {},

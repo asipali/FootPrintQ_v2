@@ -177,10 +177,12 @@ def test_greenbone_verified_tls_connection_checks_chain_and_hostname():
 def test_greenbone_task_status_reads_last_report_id():
     client = GreenboneClient(host="gvm.lab", username="scanner", password="secret")
     gmp = MagicMock()
-    gmp.get_tasks.return_value = (
+    xml_payload = (
         '<get_tasks_response><task id="task-1"><status>Done</status><progress>100</progress>'
         '<last_report><report id="report-1"/></last_report></task></get_tasks_response>'
     )
+    gmp.get_task.return_value = xml_payload
+    gmp.get_tasks.return_value = xml_payload
     with patch.object(client, "_open_session", return_value=gmp):
         result = client.get_task_status("task-1")
     assert result["status"] == "Done"

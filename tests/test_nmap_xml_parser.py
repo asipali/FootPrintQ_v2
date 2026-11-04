@@ -200,3 +200,168 @@ def test_parse_empty_string():
     """Verify empty string is rejected cleanly."""
     with pytest.raises(NmapXmlParseError, match="empty"):
         parse_nmap_xml("")
+
+
+def test_nmap_reachability_semantics_confirmed_up():
+    """Verify that a host with open ports and responsive reason is marked HOST_CONFIRMED_UP."""
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+    <nmaprun scanner="nmap" args="nmap -sT 192.168.1.50" version="7.94">
+      <host>
+        <status state="up" reason="syn-ack"/>
+        <address addr="192.168.1.50" addrtype="ipv4"/>
+        <ports>
+          <port protocol="tcp" portid="80">
+            <state state="open" reason="syn-ack"/>
+          </port>
+        </ports>
+      </host>
+    </nmaprun>
+    """
+    res = parse_nmap_xml(xml)
+    host = res.hosts[0]
+    assert host.reachability_state == "HOST_CONFIRMED_UP"
+    assert host.status_reason == "syn-ack"
+    assert host.skipped_host_discovery is False
+
+
+def test_nmap_reachability_semantics_assumed_up_pn_zero_open_ports():
+    """Verify that when -Pn is used ('user-set' reason) and no ports respond, host is marked HOST_ASSUMED_UP."""
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+    <nmaprun scanner="nmap" args="nmap -sT -T3 --top-ports 100 -Pn 192.168.56.107" version="7.94">
+      <scaninfo type="connect" protocol="tcp" numservices="100" services="1-100"/>
+      <host>
+        <status state="up" reason="user-set"/>
+        <address addr="192.168.56.107" addrtype="ipv4"/>
+        <ports>
+          <port protocol="tcp" portid="80">
+            <state state="filtered" reason="no-response"/>
+          </port>
+          <port protocol="tcp" portid="443">
+            <state state="open|filtered" reason="no-response"/>
+          </port>
+        </ports>
+      </host>
+      <runstats>
+        <finished time="1700000005" exit="success"/>
+        <hosts up="1" down="0" total="1"/>
+      </runstats>
+    </nmaprun>
+    """
+    res = parse_nmap_xml(xml)
+    host = res.hosts[0]
+    assert host.reachability_state == "HOST_ASSUMED_UP"
+    assert host.status_reason == "user-set"
+    assert host.skipped_host_discovery is True
+    # Verify individual port states are preserved
+    assert host.ports[0].state == "filtered"
+    assert host.ports[1].state == "open|filtered"
+
+
+def test_nmap_reachability_semantics_unreachable():
+    """Verify that a down host is marked HOST_UNREACHABLE."""
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+    <nmaprun scanner="nmap" args="nmap -sT 192.168.1.99" version="7.94">
+      <host>
+        <status state="down" reason="no-response"/>
+        <address addr="192.168.1.99" addrtype="ipv4"/>
+      </host>
+    </nmaprun>
+    """
+    res = parse_nmap_xml(xml)
+    host = res.hosts[0]
+    assert host.reachability_state == "HOST_UNREACHABLE"
+    assert host.status == "down"
+    assert host.status_reason == "no-response"
+
+
+def test_nmap_reachability_semantics_unknown():
+    """Verify that missing status is marked HOST_UNKNOWN."""
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+    <nmaprun scanner="nmap" args="nmap 192.168.1.100" version="7.94">
+      <host>
+        <address addr="192.168.1.100" addrtype="ipv4"/>
+      </host>
+    </nmaprun>
+    """
+    res = parse_nmap_xml(xml)
+    host = res.hosts[0]
+    assert host.reachability_state == "HOST_UNKNOWN"
+    assert host.status == "unknown"
+
+
+def test_nmap_reachability_discovery_probe_echo_reply_and_arp():
+    """Verify discovery probes (echo-reply, arp-response) confirm reachability without ports."""
+    xml_echo = """<?xml version="1.0" encoding="UTF-8"?>
+    <nmaprun scanner="nmap" args="nmap -sn 192.168.1.1" version="7.94">
+      <host>
+        <status state="up" reason="echo-reply"/>
+        <address addr="192.168.1.1" addrtype="ipv4"/>
+      </host>
+    </nmaprun>
+    """
+    res_echo = parse_nmap_xml(xml_echo)
+    assert res_echo.hosts[0].reachability_state == "HOST_CONFIRMED_UP"
+    assert res_echo.hosts[0].status_reason == "echo-reply"
+
+    xml_arp = """<?xml version="1.0" encoding="UTF-8"?>
+    <nmaprun scanner="nmap" args="nmap -sn 192.168.1.2" version="7.94">
+      <host>
+        <status state="up" reason="arp-response"/>
+        <address addr="192.168.1.2" addrtype="ipv4"/>
+      </host>
+    </nmaprun>
+    """
+    res_arp = parse_nmap_xml(xml_arp)
+    assert res_arp.hosts[0].reachability_state == "HOST_CONFIRMED_UP"
+    assert res_arp.hosts[0].status_reason == "arp-response"
+
+
+def test_nmap_reachability_zero_open_ports_with_closed_rst_responses():
+    """Verify host with zero open ports but responsive closed ports (conn-refused) is HOST_CONFIRMED_UP."""
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+    <nmaprun scanner="nmap" args="nmap -sT -T3 --top-ports 5 -Pn 127.0.0.1" version="7.94">
+      <host>
+        <status state="up" reason="user-set"/>
+        <address addr="127.0.0.1" addrtype="ipv4"/>
+        <ports>
+          <port protocol="tcp" portid="21"><state state="closed" reason="conn-refused"/></port>
+          <port protocol="tcp" portid="22"><state state="closed" reason="conn-refused"/></port>
+          <port protocol="tcp" portid="23"><state state="closed" reason="conn-refused"/></port>
+        </ports>
+      </host>
+    </nmaprun>
+    """
+    res = parse_nmap_xml(xml)
+    host = res.hosts[0]
+    # Because TCP RST packets were received (closed), host presence is confirmed, not assumed
+    assert host.reachability_state == "HOST_CONFIRMED_UP"
+    assert len(host.ports) == 3
+    assert all(p.state == "closed" for p in host.ports)
+
+
+def test_nmap_all_port_states_preservation():
+    """Verify all discrete Nmap port states are preserved without collapsing."""
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+    <nmaprun scanner="nmap" args="nmap -sT 10.0.0.1" version="7.94">
+      <host>
+        <status state="up" reason="syn-ack"/>
+        <address addr="10.0.0.1" addrtype="ipv4"/>
+        <ports>
+          <port protocol="tcp" portid="80"><state state="open" reason="syn-ack"/></port>
+          <port protocol="tcp" portid="443"><state state="closed" reason="conn-refused"/></port>
+          <port protocol="tcp" portid="8080"><state state="filtered" reason="no-response"/></port>
+          <port protocol="tcp" portid="8443"><state state="open|filtered" reason="no-response"/></port>
+          <port protocol="tcp" portid="9000"><state state="unfiltered" reason="reset"/></port>
+        </ports>
+      </host>
+    </nmaprun>
+    """
+    res = parse_nmap_xml(xml)
+    host = res.hosts[0]
+    states = [p.state for p in host.ports]
+    assert states == ["open", "closed", "filtered", "open|filtered", "unfiltered"]
+    assert host.ports[0].reason == "syn-ack"
+    assert host.ports[1].reason == "conn-refused"
+    assert host.ports[2].reason == "no-response"
+    assert host.ports[3].reason == "no-response"
+    assert host.ports[4].reason == "reset"

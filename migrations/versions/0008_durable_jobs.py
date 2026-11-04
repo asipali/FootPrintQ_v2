@@ -17,6 +17,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    is_mssql = op.get_bind().dialect.name == "mssql"
     op.create_table(
         "jobs",
         sa.Column("id", sa.String(length=64), primary_key=True, nullable=False),
@@ -38,7 +39,7 @@ def upgrade() -> None:
         sa.Column("error_message", sa.Text(), nullable=True),
         sa.Column("cancellation_requested", sa.Boolean(), server_default=sa.false(), nullable=False),
         sa.Column("cancellation_reason", sa.Text(), nullable=True),
-        sa.Column("evidence_id", sa.String(length=64), sa.ForeignKey("evidence.id", ondelete="SET NULL"), nullable=True),
+        sa.Column("evidence_id", sa.String(length=64), sa.ForeignKey("evidence.id", ondelete="NO ACTION" if is_mssql else "SET NULL"), nullable=True),
         sa.Column("duration_seconds", sa.Float(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),

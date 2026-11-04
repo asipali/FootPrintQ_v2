@@ -9,7 +9,7 @@ from typing import Optional, List, Dict, Any
 from pathlib import Path
 from fastapi import FastAPI, Request, status, Depends, Form
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse, Response
 from urllib.parse import quote
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -33,7 +33,10 @@ from app.api.recon import router as recon_router
 from app.api.authorizations import router as authorizations_router
 from app.api.nmap_scans import router as nmap_scans_router
 from app.api.vulnerability import router as vulnerability_router
+from app.api.correlations import router as correlations_router
+from app.api.exposure_score import router as exposure_score_router
 from app.api.web_dashboard import router as web_dashboard_router
+from app.presentation.api.v1.routes import api_v1_router
 from app.api.deps import (
 
     get_current_user_optional,
@@ -81,7 +84,29 @@ async def lifespan(app: FastAPI):
     if is_ok:
         logger.info(f"Database connectivity confirmed ({settings.DATABASE_URL.split('://')[0]}).")
     else:
+        if settings.APP_ENV in {"staging", "production"}:
+            logger.critical(f"FATAL: Database connectivity probe failed in {settings.APP_ENV} mode: {msg}")
+            raise RuntimeError(f"Database connectivity probe failed in {settings.APP_ENV} mode: {msg}")
         logger.warning(f"Database startup probe warning: {msg}")
+
+    # Storage connectivity probe
+    try:
+        from app.storage.factory import get_storage_adapter, close_storage_adapters
+        storage_adapter = get_storage_adapter(settings=settings)
+        storage_health = storage_adapter.health_check()
+        if storage_health.is_healthy:
+            logger.info("Storage backend '%s' connectivity confirmed (%s).", settings.STORAGE_BACKEND, storage_health.details)
+        else:
+            if settings.APP_ENV in {"staging", "production"} and settings.STORAGE_BACKEND == "seaweedfs":
+                logger.critical("FATAL: Storage connectivity probe failed in %s mode: %s", settings.APP_ENV, storage_health.details)
+                raise RuntimeError(f"Storage connectivity probe failed in {settings.APP_ENV} mode: {storage_health.details}")
+            logger.warning("Storage startup probe warning: %s", storage_health.details)
+    except RuntimeError:
+        raise
+    except Exception as storage_err:
+        if settings.APP_ENV in {"staging", "production"} and settings.STORAGE_BACKEND == "seaweedfs":
+            raise RuntimeError(f"Storage startup failure in {settings.APP_ENV} mode: {storage_err}") from storage_err
+        logger.warning("Storage probe exception: %s", storage_err)
 
     # Startup durable job recovery for interrupted tasks
     try:
@@ -105,6 +130,12 @@ async def lifespan(app: FastAPI):
             db.close()
 
     yield
+
+    try:
+        from app.storage.factory import close_storage_adapters
+        close_storage_adapters()
+    except Exception:
+        pass
 
     logger.info(f"Shutting down {settings.APP_NAME} runtime.")
 
@@ -149,6 +180,32 @@ def create_app(settings: Settings = None) -> FastAPI:
         token = request_id_ctx.set(req_id)
         request.state.request_id = req_id
 
+        def apply_security_headers(res: Response) -> Response:
+            res.headers["X-Request-ID"] = req_id
+            res.headers["X-Content-Type-Options"] = "nosniff"
+            res.headers["X-Frame-Options"] = "DENY"
+            res.headers["X-XSS-Protection"] = "1; mode=block"
+            res.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+            res.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
+            res.headers["Content-Security-Policy"] = (
+                "default-src 'self'; "
+                "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com; "
+                "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                "img-src 'self' data: https:; "
+                "font-src 'self' data:; "
+                "connect-src 'self'; "
+                "frame-ancestors 'none'; "
+                "form-action 'self'; "
+                "base-uri 'self'; "
+                "object-src 'none';"
+            )
+            if app_settings.is_production:
+                res.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+            if request.url.path.startswith(("/api/", "/dashboard", "/investigations", "/findings", "/scans", "/evidence", "/audit", "/admin/")):
+                res.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+                res.headers["Pragma"] = "no-cache"
+            return res
+
         # Enforce the browser access boundary before dashboard handlers can
         # query or render operational data. API handlers retain their finer
         # grained permission checks.
@@ -171,7 +228,10 @@ def create_app(settings: Settings = None) -> FastAPI:
         if is_protected:
             override = request.app.dependency_overrides.get(get_db)
             db_generator = override() if override else None
-            db = next(db_generator) if db_generator else SessionLocal()
+            if db_generator:
+                db = next(db_generator) if hasattr(db_generator, "__next__") else db_generator
+            else:
+                db = SessionLocal()
             try:
                 current_user = get_current_user_optional(request, db=db)
                 current_user_role = current_user.role if current_user else None
@@ -180,24 +240,24 @@ def create_app(settings: Settings = None) -> FastAPI:
                     db.close()
             if not current_user:
                 if is_api:
-                    return JSONResponse(
+                    return apply_security_headers(JSONResponse(
                         status_code=status.HTTP_401_UNAUTHORIZED,
                         content={"error": {"status_code": 401, "message": "Authentication required", "request_id": req_id}},
                         headers={"WWW-Authenticate": "Bearer", "X-Request-ID": req_id},
-                    )
+                    ))
                 target = request.url.path + ("?" + request.url.query if request.url.query else "")
-                return RedirectResponse(
+                return apply_security_headers(RedirectResponse(
                     url=f"/login?next={quote(target, safe='/')}",
                     status_code=status.HTTP_303_SEE_OTHER,
                     headers={"X-Request-ID": req_id},
-                )
+                ))
             role_restricted = path.startswith(("/admin/", "/audit"))
             if role_restricted and current_user_role != ROLE_ADMINISTRATOR:
-                return JSONResponse(
+                return apply_security_headers(JSONResponse(
                     status_code=status.HTTP_403_FORBIDDEN,
                     content={"error": {"status_code": 403, "message": "Administrator role required", "request_id": req_id}},
                     headers={"X-Request-ID": req_id},
-                )
+                ))
             required_permission = None
             if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not is_api:
                 if path == "/investigations":
@@ -213,27 +273,19 @@ def create_app(settings: Settings = None) -> FastAPI:
                 elif path.startswith("/investigations/"):
                     required_permission = "investigation.create"
             if required_permission and not has_permission(current_user_role, required_permission):
-                return JSONResponse(
+                return apply_security_headers(JSONResponse(
                     status_code=status.HTTP_403_FORBIDDEN,
                     content={"error": {"status_code": 403, "message": f"Operation requires permission: {required_permission}", "request_id": req_id}},
                     headers={"X-Request-ID": req_id},
-                )
+                ))
 
         start_time = time.perf_counter()
         try:
             response = await call_next(request)
             duration_ms = (time.perf_counter() - start_time) * 1000
 
-            response.headers["X-Request-ID"] = req_id
             response.headers["X-Response-Time"] = f"{duration_ms:.2f}ms"
-
-            # Browser security headers
-            response.headers["X-Content-Type-Options"] = "nosniff"
-            response.headers["X-Frame-Options"] = "DENY"
-            response.headers["X-XSS-Protection"] = "1; mode=block"
-            response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-            if app_settings.is_production:
-                response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+            apply_security_headers(response)
 
             # Avoid logging static asset requests at INFO level
             if not request.url.path.startswith("/static"):
@@ -255,19 +307,43 @@ def create_app(settings: Settings = None) -> FastAPI:
         # If 403 Forbidden for browser HTML requests, render access denied page
         accept_header = request.headers.get("Accept", "")
         if exc.status_code == 403 and "text/html" in accept_header and not request.url.path.startswith("/api/"):
-            current_user = get_current_user_optional(request, db=next(get_db()))
-            return templates.TemplateResponse(
-                request=request,
-                name="access_denied.html",
-                status_code=403,
-                context={
-                    "app_name": app_settings.APP_NAME,
-                    "app_version": app_settings.APP_VERSION,
-                    "app_env": app_settings.APP_ENV,
-                    "current_user": current_user,
-                    "csrf_token": request.cookies.get(app_settings.CSRF_COOKIE_NAME, ""),
-                }
-            )
+            db_gen = get_db()
+            db_session = next(db_gen)
+            try:
+                current_user = get_current_user_optional(request, db=db_session)
+                user_ctx = None
+                if current_user:
+                    user_ctx = {
+                        "id": current_user.id,
+                        "username": current_user.username,
+                        "role": current_user.role,
+                        "full_name": current_user.full_name,
+                        "email": current_user.email,
+                    }
+                return templates.TemplateResponse(
+                    request=request,
+                    name="access_denied.html",
+                    status_code=403,
+                    context={
+                        "app_name": app_settings.APP_NAME,
+                        "app_version": app_settings.APP_VERSION,
+                        "app_env": app_settings.APP_ENV,
+                        "current_user": user_ctx,
+                        "detail": detail if isinstance(detail, str) else "Access Denied",
+                        "csrf_token": request.cookies.get(app_settings.CSRF_COOKIE_NAME, ""),
+                    }
+                )
+            except Exception as render_err:
+                logger.warning("Error rendering access_denied template: %s", render_err)
+            finally:
+                try:
+                    next(db_gen, None)
+                except Exception:
+                    pass
+
+        resp_headers = {"X-Request-ID": req_id}
+        if getattr(exc, "headers", None):
+            resp_headers.update(exc.headers)
 
         return JSONResponse(
             status_code=exc.status_code,
@@ -278,7 +354,7 @@ def create_app(settings: Settings = None) -> FastAPI:
                     "request_id": req_id
                 }
             },
-            headers={"X-Request-ID": req_id}
+            headers=resp_headers
         )
 
     @app.exception_handler(RequestValidationError)
@@ -331,7 +407,10 @@ def create_app(settings: Settings = None) -> FastAPI:
     app.include_router(authorizations_router)
     app.include_router(nmap_scans_router)
     app.include_router(vulnerability_router)
+    app.include_router(correlations_router)
+    app.include_router(exposure_score_router)
     app.include_router(web_dashboard_router)
+    app.include_router(api_v1_router, prefix="/api")
 
 
     # =========================================================================

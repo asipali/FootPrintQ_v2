@@ -214,7 +214,10 @@ def get_raw_evidence(
 
     store = get_evidence_store()
     try:
-        content_bytes, computed_hash = store.read_evidence(evidence.raw_content_path)
+        content_bytes, computed_hash = store.read_evidence(
+            evidence.raw_content_path,
+            backend=evidence.storage_backend,
+        )
     except FileNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence file missing on server")
     except Exception:
@@ -238,5 +241,6 @@ def get_raw_evidence(
             "X-Content-SHA256": evidence.content_hash,
             "X-Computed-SHA256": computed_hash,
             "X-Evidence-Integrity": "VERIFIED",
+            "X-Evidence-Storage-Backend": evidence.storage_backend or "filesystem",
         },
     )

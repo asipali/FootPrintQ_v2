@@ -12,8 +12,20 @@
           <span class="badge badge-brand mono">{{ inv.id }}</span>
           {% if inv.status == 'active' %}
             <span class="badge badge-emerald">ACTIVE CAMPAIGN</span>
-          {% elif inv.status == 'completed' %}
+          {% elif inv.status in ('completed',) %}
             <span class="badge badge-brand">COMPLETED</span>
+          {% elif inv.status in ('partially_completed',) %}
+            <span class="badge badge-amber">PARTIALLY COMPLETED</span>
+          {% elif inv.status in ('running',) %}
+            <span class="badge badge-brand">RUNNING</span>
+          {% elif inv.status in ('queued',) %}
+            <span class="badge badge-amber">QUEUED</span>
+          {% elif inv.status in ('draft',) %}
+            <span class="badge badge-muted">DRAFT</span>
+          {% elif inv.status in ('cancelled',) %}
+            <span class="badge badge-rose">CANCELLED</span>
+          {% elif inv.status in ('failed',) %}
+            <span class="badge badge-rose">FAILED</span>
           {% else %}
             <span class="badge badge-amber">{{ inv.status|upper }}</span>
           {% endif %}
@@ -34,6 +46,15 @@
       </div>
 
       <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+        <form method="POST" action="/investigations/{{ inv.id }}/workflow/run" style="display: inline; margin: 0;">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="btn btn-secondary" style="font-size: 0.78rem; background: var(--brand-blue, #2563eb); color: white;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>
+            Run Investigation Workflow
+          </button>
+        </form>
         <a href="/investigations/{{ inv.id }}/report/pdf" class="btn btn-primary" style="font-size: 0.78rem;">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -47,6 +68,12 @@
   </div>
 </div>
 
+{% if error %}
+<div class="alert alert-danger" style="background: rgba(239, 68, 68, 0.15); border: 1px solid var(--accent-red, #ef4444); color: #fca5a5; padding: 0.85rem 1.25rem; border-radius: 6px; margin-bottom: 1.25rem; font-size: 0.875rem;">
+  <strong>Notice:</strong> {{ error }}
+</div>
+{% endif %}
+
 <!-- Tab Navigation -->
 <div class="tab-bar">
   <button class="tab-btn active" onclick="switchTab(event, 'tab-overview')">Overview &amp; Scope</button>
@@ -54,6 +81,7 @@
   <button class="tab-btn" onclick="switchTab(event, 'tab-passive')">Passive Recon &amp; Entities ({{ entities|length }})</button>
   <button class="tab-btn" onclick="switchTab(event, 'tab-active')">Active Nmap Ports ({{ scan_ports|length }})</button>
   <button class="tab-btn" onclick="switchTab(event, 'tab-vulns')">Vulnerabilities ({{ vuln_findings|length }})</button>
+  <button class="tab-btn" onclick="switchTab(event, 'tab-correlations')">Correlated Intelligence ({{ correlation_records|length }})</button>
   <button class="tab-btn" onclick="switchTab(event, 'tab-evidence')">Forensic Evidence ({{ evidence_list|length }})</button>
   <button class="tab-btn" onclick="switchTab(event, 'tab-jobs')">Execution Jobs</button>
   <button class="tab-btn" onclick="switchTab(event, 'tab-report')">Score &amp; Report</button>
@@ -325,6 +353,65 @@
     </div>
   </div>
 
+  <!-- Target Hosts Reachability Table -->
+  <div class="card" style="margin-bottom: 1.25rem;">
+    <div class="card-header">
+      <h3 class="card-title">Discovered Target Hosts &amp; Reachability ({{ scan_hosts|length }})</h3>
+    </div>
+    {% if scan_hosts %}
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Host Address</th>
+            <th>Type</th>
+            <th>Reachability Status</th>
+            <th>Discovery Mode</th>
+            <th>Hostname</th>
+            <th>OS Match</th>
+            <th>Scanned Ports</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for h in scan_hosts %}
+          <tr>
+            <td class="mono" style="font-weight: 700;">{{ h.address }}</td>
+            <td class="mono" style="font-size: 0.78rem;">{{ h.address_type|upper }}</td>
+            <td>
+              {% if h.status == 'HOST_CONFIRMED_UP' %}
+                <span class="badge badge-emerald">CONFIRMED UP</span>
+              {% elif h.status == 'HOST_ASSUMED_UP' %}
+                <span class="badge badge-amber" title="Discovery was skipped via -Pn; reachability is assumed">ASSUMED UP (-Pn)</span>
+              {% elif h.status == 'HOST_UNREACHABLE' or h.status == 'down' %}
+                <span class="badge badge-crit">UNREACHABLE</span>
+              {% elif h.status == 'up' %}
+                <span class="badge badge-emerald">UP</span>
+              {% else %}
+                <span class="badge badge-muted">{{ h.status|upper }}</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if h.status == 'HOST_ASSUMED_UP' %}
+                <span class="mono" style="font-size: 0.75rem; color: var(--text-muted);">Skipped (-Pn)</span>
+              {% else %}
+                <span class="mono" style="font-size: 0.75rem; color: var(--text-muted);">Probed</span>
+              {% endif %}
+            </td>
+            <td>{{ h.hostname or '—' }}</td>
+            <td>{{ h.os_match or '—' }}</td>
+            <td class="mono" style="font-size: 0.78rem;">{{ h.ports|length }} port(s)</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state" style="padding: 1.5rem;">
+      <p style="color: var(--text-muted); font-size: 0.85rem; margin: 0;">No host targets enumerated yet. Launch an active Nmap scan above to probe hosts.</p>
+    </div>
+    {% endif %}
+  </div>
+
   <!-- Discovered Ports Table -->
   <div class="card">
     <div class="card-header">
@@ -394,25 +481,39 @@
   <div class="card">
     <div class="card-header">
       <h3 class="card-title">
-        <span class="status-pill {% if vuln_jobs and vuln_jobs[0].status == 'RUNNING' %}running{% else %}failed{% endif %}"></span>
+        <span class="status-pill {% if vuln_jobs and vuln_jobs[0].status == 'RUNNING' %}running{% elif vuln_jobs and vuln_jobs[0].status == 'COMPLETED' %}healthy{% else %}failed{% endif %}"></span>
         Dispatch Greenbone / OpenVAS Assessment
       </h3>
-      <span class="badge badge-crit">SCAN_VULN AUTHORIZATION REQUIRED</span>
+      <div style="display: flex; gap: 0.5rem; align-items: center;">
+        {% if greenbone_diag and greenbone_diag.status in ['HEALTHY', 'READY'] %}
+          <span class="badge badge-emerald">GREENBONE HEALTHY ({{ greenbone_diag.scanner_status or 'OpenVAS 23.51.0' }})</span>
+        {% else %}
+          <span class="badge badge-crit">{{ greenbone_diag.status if greenbone_diag else 'NOT_CONFIGURED' }}</span>
+        {% endif %}
+        <span class="badge badge-crit">SCAN_VULN AUTHORIZATION REQUIRED</span>
+      </div>
     </div>
     <div class="card-body">
+      {% if greenbone_diag and greenbone_diag.status not in ['HEALTHY', 'READY'] %}
+      <div style="background: rgba(239, 68, 68, 0.1); border-left: 3px solid var(--crit-primary); padding: 0.75rem 1rem; margin-bottom: 1rem; border-radius: var(--radius-sm); font-size: 0.82rem;">
+        <strong>Scanner Notice:</strong> Greenbone GMP daemon reports status <code class="mono">{{ greenbone_diag.status }}</code>. {{ greenbone_diag.message or 'Ensure the GVM integration bridge is running.' }}
+      </div>
+      {% endif %}
+
       <form method="POST" action="/investigations/{{ inv.id }}/scans/vuln">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="grid-3" style="align-items: flex-end; margin-bottom: 0;">
           <div>
             <label class="form-label">Authorized Target IP / Host</label>
-            <input type="text" name="target" required class="form-control" value="{{ inv.active_targets[0] if inv.active_targets else '' }}" placeholder="e.g. 192.168.56.102">
+            <input type="text" name="target" required class="form-control" value="{{ inv.active_targets[0] if inv.active_targets else '' }}" placeholder="e.g. 192.168.56.107">
           </div>
           <div>
             <label class="form-label">Approved GVM Profile</label>
             <select name="profile_id" class="form-select">
-              <option value="openvas-basic">openvas-basic (Baseline Vulnerability Assessment)</option>
-              <option value="openvas-full-and-fast">openvas-full-and-fast (Comprehensive NVT Scan)</option>
-              <option value="openvas-discovery">openvas-discovery (Service &amp; Host Detection)</option>
+              <option value="openvas-basic">openvas-basic (Baseline Vulnerability Assessment - Base)</option>
+              <option value="openvas-discovery">openvas-discovery (Service &amp; Host Detection - Discovery)</option>
+              <option value="openvas-host-discovery">openvas-host-discovery (Non-intrusive Ping Discovery)</option>
+              <option value="openvas-full-and-fast">openvas-full-and-fast (Comprehensive NVT Scan - Full and fast)</option>
             </select>
           </div>
           <div>
@@ -425,10 +526,108 @@
     </div>
   </div>
 
+  <!-- Assessment Jobs History -->
+  {% if vuln_jobs %}
+  <div class="card">
+    <div class="card-header">
+      <h3 class="card-title">Assessment Task History ({{ vuln_jobs|length }})</h3>
+    </div>
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Job ID</th>
+            <th>Target</th>
+            <th>Profile</th>
+            <th>Status</th>
+            <th>Progress</th>
+            <th>Started</th>
+            <th>Duration</th>
+            <th>Findings</th>
+            <th>Evidence</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for vj in vuln_jobs %}
+          <tr>
+            <td class="mono" style="font-weight: 600; font-size: 0.78rem;">{{ vj.id }}</td>
+            <td class="mono" style="font-size: 0.78rem;">{{ vj.target }}</td>
+            <td><span class="badge badge-info">{{ vj.profile_id }}</span></td>
+            <td>
+              {% if vj.status == 'COMPLETED' %}
+                <span class="badge badge-emerald">COMPLETED</span>
+              {% elif vj.status == 'RUNNING' %}
+                <span class="badge badge-info">RUNNING</span>
+              {% elif vj.status == 'QUEUED' %}
+                <span class="badge badge-purple">QUEUED</span>
+              {% elif vj.status == 'CANCELLED' %}
+                <span class="badge badge-muted">CANCELLED</span>
+              {% else %}
+                <span class="badge badge-crit">{{ vj.status }}</span>
+              {% endif %}
+            </td>
+            <td class="mono" style="font-size: 0.78rem;">
+              {{ vj.progress or 0 }}%
+            </td>
+            <td class="mono" style="font-size: 0.75rem;">
+              {{ vj.started_at.strftime('%Y-%m-%d %H:%M:%S') if vj.started_at else '—' }}
+            </td>
+            <td class="mono" style="font-size: 0.75rem;">
+              {% if vj.duration_seconds %}
+                {{ "%.1f"|format(vj.duration_seconds) }}s
+              {% else %}
+                —
+              {% endif %}
+            </td>
+            <td class="mono" style="font-weight: 700; font-size: 0.78rem;">
+              {{ vj.findings|length }}
+            </td>
+            <td>
+              {% if vj.evidence_id %}
+                <a href="#tab-evidence" onclick="switchTab('tab-evidence');" class="badge badge-emerald mono" style="text-decoration: none;">
+                  {{ vj.evidence_id[:12] }}
+                </a>
+              {% else %}
+                <span style="color: var(--text-muted); font-size: 0.75rem;">—</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if vj.status in ('QUEUED', 'RUNNING', 'CONFIGURING_TARGET', 'CREATING_TASK') %}
+                <form method="POST" action="/scans/vuln/{{ vj.id }}/cancel" style="display: inline;">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button type="submit" class="btn btn-secondary btn-sm" style="color: var(--crit-primary); padding: 0.2rem 0.5rem; font-size: 0.72rem;">Cancel</button>
+                </form>
+              {% else %}
+                <span style="color: var(--text-muted); font-size: 0.75rem;">—</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
   <!-- Vulnerability Findings Matrix -->
   <div class="card">
     <div class="card-header">
       <h3 class="card-title">Vulnerability Findings Matrix ({{ vuln_findings|length }})</h3>
+      {% if vuln_findings %}
+      <div style="display: flex; gap: 0.5rem; font-size: 0.75rem;">
+        {% set crit_count = vuln_findings|selectattr('severity', 'equalto', 'critical')|list|length %}
+        {% set high_count = vuln_findings|selectattr('severity', 'equalto', 'high')|list|length %}
+        {% set med_count = vuln_findings|selectattr('severity', 'equalto', 'medium')|list|length %}
+        {% set low_count = vuln_findings|selectattr('severity', 'equalto', 'low')|list|length %}
+        {% set info_count = vuln_findings|selectattr('severity', 'equalto', 'info')|list|length %}
+        {% if crit_count %}<span class="badge badge-crit">{{ crit_count }} Critical</span>{% endif %}
+        {% if high_count %}<span class="badge badge-high">{{ high_count }} High</span>{% endif %}
+        {% if med_count %}<span class="badge badge-med">{{ med_count }} Medium</span>{% endif %}
+        {% if low_count %}<span class="badge badge-low">{{ low_count }} Low</span>{% endif %}
+        {% if info_count %}<span class="badge badge-info">{{ info_count }} Info</span>{% endif %}
+      </div>
+      {% endif %}
     </div>
     {% if vuln_findings %}
     <div class="table-container">
@@ -509,6 +708,218 @@
 </div>
 
 <!-- =========================================================================
+     TAB: CORRELATED ASSET & FINDINGS INTELLIGENCE
+     ========================================================================= -->
+<div id="tab-correlations" class="tab-content" style="display: none;">
+  <!-- Summary Metrics Cards -->
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+    <div class="card" style="padding: 1rem; text-align: center;">
+      <div style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-secondary); font-weight: 600;">Correlated Assets</div>
+      <div style="font-size: 1.75rem; font-weight: 700; color: var(--brand-primary); margin-top: 0.25rem;">{{ correlation_data.summary.total_assets or 0 }}</div>
+    </div>
+    <div class="card" style="padding: 1rem; text-align: center;">
+      <div style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-secondary); font-weight: 600;">Cross-Source Links</div>
+      <div style="font-size: 1.75rem; font-weight: 700; color: var(--text-primary); margin-top: 0.25rem;">{{ correlation_records|length }}</div>
+    </div>
+    <div class="card" style="padding: 1rem; text-align: center;">
+      <div style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-secondary); font-weight: 600;">Confirmed Matches</div>
+      <div style="font-size: 1.75rem; font-weight: 700; color: var(--emerald-600); margin-top: 0.25rem;">{{ correlation_data.summary.relationship_types.CONFIRMED_MATCH or 0 }}</div>
+    </div>
+    <div class="card" style="padding: 1rem; text-align: center;">
+      <div style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-secondary); font-weight: 600;">Verified Evidence</div>
+      <div style="font-size: 1.75rem; font-weight: 700; color: var(--emerald-600); margin-top: 0.25rem;">{{ correlation_data.summary.total_evidence_verified or 0 }}</div>
+    </div>
+    <div class="card" style="padding: 1rem; text-align: center;">
+      <div style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-secondary); font-weight: 600;">Unmatched Observations</div>
+      <div style="font-size: 1.75rem; font-weight: 700; color: var(--amber-600); margin-top: 0.25rem;">{{ unmatched_observations|length }}</div>
+    </div>
+  </div>
+
+  <!-- Distinct Category Notice -->
+  <div style="background: var(--bg-secondary); border-left: 4px solid var(--brand-primary); padding: 0.75rem 1rem; border-radius: var(--radius-sm); margin-bottom: 1.5rem; font-size: 0.8rem; color: var(--text-secondary);">
+    <strong style="color: var(--text-primary);">Data Relationship Semantics:</strong>
+    Relationships describe cross-subsystem corroborated observations across passive intelligence, Nmap port scanning, and Greenbone vulnerability assessments.
+    <span class="badge badge-emerald" style="margin-left: 0.5rem;">CONFIRMED_MATCH</span> indicates exact attribute correspondence (e.g. verified open port + finding on same IP and port). Inferred relationships do not constitute proof of compromise.
+  </div>
+
+  <!-- Correlated Assets Inventory -->
+  <div class="card" style="margin-bottom: 1.5rem;">
+    <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+      <h3 class="card-title">Normalized Asset Profiles &amp; Exposure Mapping ({{ correlated_assets|length }})</h3>
+      <a href="/api/v1/investigations/{{ inv.id }}/correlations" target="_blank" class="btn btn-secondary" style="font-size: 0.75rem; padding: 0.25rem 0.5rem;">View JSON API &rarr;</a>
+    </div>
+    {% if correlated_assets %}
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Asset Identifier</th>
+            <th>Type</th>
+            <th>Hostnames / Domains</th>
+            <th>Open Ports &amp; Services</th>
+            <th>Correlated Vulns</th>
+            <th>Evidence Artifacts</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in correlated_assets %}
+          <tr>
+            <td class="mono font-semibold" style="color: var(--brand-primary);">{{ a.identifier }}</td>
+            <td><span class="badge badge-muted mono">{{ a.asset_type }}</span></td>
+            <td>
+              {% if a.hostnames or a.domains %}
+                {% for h in a.hostnames %}<span class="badge badge-muted mono" style="margin-right: 0.25rem;">{{ h }}</span>{% endfor %}
+                {% for d in a.domains %}<span class="badge badge-muted mono" style="margin-right: 0.25rem;">{{ d }}</span>{% endfor %}
+              {% else %}
+                <span class="text-muted" style="font-size: 0.75rem;">None recorded</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if a.open_ports %}
+                {% for p in a.open_ports %}
+                  <span class="badge badge-emerald mono" style="margin-right: 0.25rem; margin-bottom: 0.25rem; display: inline-block;">
+                    {{ p.port }}/{{ p.protocol }} ({{ p.service }})
+                  </span>
+                {% endfor %}
+              {% else %}
+                <span class="text-muted" style="font-size: 0.75rem;">Zero open ports</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if a.vulnerabilities %}
+                <span class="badge badge-amber mono" style="font-weight: 700;">{{ a.vulnerabilities|length }} finding(s)</span>
+              {% else %}
+                <span class="badge badge-emerald mono">0 findings</span>
+              {% endif %}
+            </td>
+            <td>
+              <span class="badge badge-muted mono">{{ a.evidence_ids|length }} artifact(s)</span>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state" style="padding: 2rem; text-align: center; color: var(--text-secondary);">
+      <p>No normalized assets currently recorded for this investigation.</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Cross-Source Correlated Relationships Matrix -->
+  <div class="card" style="margin-bottom: 1.5rem;">
+    <div class="card-header">
+      <h3 class="card-title">Deterministic Correlation Matrix ({{ correlation_records|length }})</h3>
+    </div>
+    {% if correlation_records %}
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Correlation ID &amp; Rule</th>
+            <th>Relationship Strength</th>
+            <th>Confidence</th>
+            <th>Target Asset</th>
+            <th>Matched Attributes</th>
+            <th>Evidence Integrity</th>
+            <th>Lifecycle</th>
+            <th>Correlation Summary</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in correlation_records %}
+          <tr>
+            <td>
+              <div class="mono font-semibold" style="font-size: 0.8rem;">{{ c.correlation_id }}</div>
+              <div class="text-muted" style="font-size: 0.7rem;">{{ c.correlation_rule_id }} ({{ c.rule_version }})</div>
+            </td>
+            <td>
+              {% if c.relationship_type == 'CONFIRMED_MATCH' %}
+                <span class="badge badge-emerald mono">{{ c.relationship_type }}</span>
+              {% elif c.relationship_type == 'STRONG_MATCH' %}
+                <span class="badge badge-brand mono">{{ c.relationship_type }}</span>
+              {% elif c.relationship_type == 'POSSIBLE_MATCH' %}
+                <span class="badge badge-amber mono">{{ c.relationship_type }}</span>
+              {% else %}
+                <span class="badge badge-muted mono">{{ c.relationship_type }}</span>
+              {% endif %}
+            </td>
+            <td>
+              <span class="mono font-semibold" style="font-size: 0.82rem;">{{ "%.2f"|format(c.confidence_score) }}</span>
+            </td>
+            <td class="mono font-semibold">{{ c.asset_identifier }}</td>
+            <td>
+              <div style="font-size: 0.72rem; color: var(--text-secondary);">
+                {% for attr in c.matching_attributes %}
+                  <code class="mono" style="padding: 0.1rem 0.3rem; margin-right: 0.2rem; background: var(--bg-secondary);">{{ attr }}</code>
+                {% endfor %}
+              </div>
+            </td>
+            <td>
+              {% if c.evidence_verification_status == 'VERIFIED' %}
+                <span class="badge badge-emerald mono">VERIFIED (SHA-256)</span>
+              {% elif c.evidence_verification_status == 'HASH_MISMATCH' %}
+                <span class="badge badge-rose mono">HASH MISMATCH</span>
+              {% elif c.evidence_verification_status == 'UNAVAILABLE' %}
+                <span class="badge badge-amber mono">UNAVAILABLE</span>
+              {% else %}
+                <span class="badge badge-muted mono">{{ c.evidence_verification_status }}</span>
+              {% endif %}
+            </td>
+            <td>
+              <span class="badge badge-muted mono" style="font-size: 0.7rem;">{{ c.lifecycle_status }}</span>
+            </td>
+            <td style="font-size: 0.78rem; line-height: 1.4; max-width: 300px;">
+              {{ c.summary }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state" style="padding: 2rem; text-align: center; color: var(--text-secondary);">
+      <p>No cross-stage correlation relationships identified yet. Run active and vulnerability assessments to establish correlated findings.</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Unmatched Observations -->
+  {% if unmatched_observations %}
+  <div class="card" style="margin-bottom: 1.5rem;">
+    <div class="card-header">
+      <h3 class="card-title">Unmatched Observations ({{ unmatched_observations|length }})</h3>
+    </div>
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Type</th>
+            <th>Host / Target</th>
+            <th>Port / Protocol</th>
+            <th>Name / Service</th>
+            <th>Provenance &amp; Isolation Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for u in unmatched_observations %}
+          <tr>
+            <td><span class="badge badge-muted mono">{{ u.type }}</span></td>
+            <td class="mono">{{ u.host }}</td>
+            <td class="mono">{% if u.port %}{{ u.port }}{% if u.protocol %}/{{ u.protocol }}{% endif %}{% else %}-{% endif %}</td>
+            <td style="font-size: 0.8rem;">{{ u.service or u.name or '-' }}</td>
+            <td style="font-size: 0.78rem; color: var(--text-secondary);">{{ u.reason }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+<!-- =========================================================================
      TAB 6: FORENSIC EVIDENCE & SHA-256 HASHES
      ========================================================================= -->
 <div id="tab-evidence" class="tab-content" style="display: none;">
@@ -523,11 +934,13 @@
           <tr>
             <th>Evidence ID</th>
             <th>Source Subsystem</th>
+            <th>Storage Backend</th>
             <th>Collector Name</th>
             <th>Target</th>
             <th>Size (Bytes)</th>
             <th>SHA-256 Cryptographic Hash</th>
             <th>Timestamp</th>
+            <th>Action</th>
           </tr>
         </thead>
         <tbody>
@@ -535,6 +948,15 @@
           <tr>
             <td class="mono" style="font-weight: 600; color: var(--brand-primary);">{{ ev.id }}</td>
             <td><span class="badge badge-brand">{{ ev.source_type }}</span></td>
+            <td>
+              {% if ev.storage_backend == 'seaweedfs' %}
+                <span class="badge badge-emerald">SEAWEEDFS</span>
+              {% elif ev.storage_backend == 'filesystem' %}
+                <span class="badge badge-amber">FILESYSTEM</span>
+              {% else %}
+                <span class="badge badge-muted">{{ ev.storage_backend|upper if ev.storage_backend else 'FILESYSTEM' }}</span>
+              {% endif %}
+            </td>
             <td>{{ ev.source_name }}</td>
             <td class="mono" style="font-size: 0.78rem;">{{ ev.target }}</td>
             <td class="mono" style="font-size: 0.75rem;">{{ ev.content_size_bytes }}</td>
@@ -543,6 +965,15 @@
             </td>
             <td class="mono" style="font-size: 0.75rem; color: var(--text-secondary);">
               {{ ev.collected_at.strftime('%Y-%m-%d %H:%M') if ev.collected_at else 'N/A' }}
+            </td>
+            <td>
+              {% if ev.raw_content_path %}
+                <a href="/api/v1/investigations/{{ ev.investigation_id }}/evidence/{{ ev.id }}/raw" class="btn btn-secondary btn-sm" target="_blank" style="padding: 2px 8px; font-size: 0.72rem; text-decoration: none;">
+                  Download
+                </a>
+              {% else %}
+                <span style="color: var(--text-muted); font-size: 0.75rem;">—</span>
+              {% endif %}
             </td>
           </tr>
           {% endfor %}
@@ -663,7 +1094,7 @@
 <div id="tab-report" class="tab-content" style="display: none;">
   <div class="grid-2">
     <!-- 5-Factor Score Breakdown Card -->
-    <div class="card">
+    <div class="card" id="card-exposure-score">
       <div class="card-header">
         <h3 class="card-title">5-Factor Exposure Score Breakdown</h3>
         {% if score.assessment_status == 'NOT_ASSESSED' %}
@@ -673,48 +1104,126 @@
         {% elif score.assessment_status == 'IN_PROGRESS' %}
           <span class="badge badge-amber mono">ASSESSMENT IN PROGRESS</span>
         {% else %}
-          <span class="badge badge-brand mono">OBSERVED-DATA {{ score.total_score }} / 100 &middot; {{ score.tier|upper }}</span>
+          <span class="badge badge-brand mono">OBSERVED {{ score.total_score }} / 100 &middot; {{ score.tier|upper }}</span>
         {% endif %}
       </div>
       <div class="card-body" style="font-size: 0.82rem;">
         {% if score.assessment_status == 'NOT_ASSESSED' %}
-        <p style="color: var(--text-secondary);">No completed collection or assessment job is recorded. A zero score here would be misleading; this investigation has not been assessed.</p>
+        <p style="color: var(--text-secondary); margin-bottom: 0.5rem;">No completed collection or assessment job is recorded. A zero score here would be misleading; this investigation has not been assessed.</p>
         {% elif score.assessment_status == 'FAILED' %}
-        <p style="color: var(--text-secondary);">Recorded jobs have not produced a completed assessment. The calculated values below reflect stored data only and are not a clean bill of health.</p>
+        <p style="color: var(--text-secondary); margin-bottom: 0.5rem;">Recorded jobs have not produced a completed assessment. The calculated values below reflect stored data only and are not a clean bill of health.</p>
         {% elif score.assessment_status == 'IN_PROGRESS' %}
-        <p style="color: var(--text-secondary);">Assessment work is still in progress. Values below reflect stored data so far and may change when jobs finish.</p>
+        <p style="color: var(--text-secondary); margin-bottom: 0.5rem;">Assessment work is still in progress. Values below reflect stored data so far and may change when jobs finish.</p>
         {% else %}
-        <p style="color: var(--text-secondary);">Observed-data heuristic based on available records. Coverage depends on enabled collectors and scanners; a low score or zero findings does not establish that the target is secure.</p>
+        <p style="color: var(--text-secondary); margin-bottom: 0.5rem;">Observed-data assessment backed by multi-source evidence. Missing coverage is explicitly flagged and never misrepresented as zero risk.</p>
         {% endif %}
-        <p style="margin-bottom: 0.75rem; color: var(--text-secondary);">
-          <strong>Formula:</strong> <code class="mono">{{ score.formula_version }}</code>
-        </p>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; gap: 0.5rem;">
+          <div>
+            <strong>Formula:</strong> <code class="mono" style="color: var(--brand-primary);">{{ score.formula_version }}</code>
+          </div>
+          {% if score.renormalized_score is not none and score.renormalized_score != score.total_score %}
+          <div>
+            <span class="badge badge-amber mono" title="Calculated strictly over completed assessment dimensions">
+              Renormalized: {{ score.renormalized_score }}/100
+            </span>
+          </div>
+          {% endif %}
+        </div>
+
+        <!-- 5-Dimension Coverage Badges -->
+        <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 0.5rem; margin-bottom: 0.75rem;">
+          <div style="font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 0.35rem;">
+            Assessment Coverage Provenance:
+          </div>
+          <div style="display: flex; gap: 0.4rem; flex-wrap: wrap;">
+            {% set dims = score.components_detail.dimension_status %}
+            <span class="badge {% if dims.passive_recon in ('COMPLETED','NO_FINDINGS_DETECTED') %}badge-emerald{% elif dims.passive_recon == 'SCANNER_UNAVAILABLE' %}badge-amber{% else %}badge-muted{% endif %} mono" style="font-size: 0.7rem;">
+              Passive: {{ dims.passive_recon }}
+            </span>
+            <span class="badge {% if dims.dns in ('COMPLETED','NO_FINDINGS_DETECTED') %}badge-emerald{% else %}badge-muted{% endif %} mono" style="font-size: 0.7rem;">
+              DNS: {{ dims.dns }}
+            </span>
+            <span class="badge {% if dims.active_nmap in ('COMPLETED','NO_FINDINGS_DETECTED') %}badge-emerald{% elif dims.active_nmap == 'SCANNER_UNAVAILABLE' %}badge-amber{% else %}badge-muted{% endif %} mono" style="font-size: 0.7rem;">
+              Nmap: {{ dims.active_nmap }}
+            </span>
+            <span class="badge {% if dims.vulnerability_scan in ('COMPLETED','NO_FINDINGS_DETECTED') %}badge-emerald{% elif dims.vulnerability_scan == 'SCANNER_UNAVAILABLE' %}badge-amber{% else %}badge-muted{% endif %} mono" style="font-size: 0.7rem;">
+              Greenbone: {{ dims.vulnerability_scan }}
+            </span>
+            <span class="badge {% if dims.evidence_correlation in ('COMPLETED','NO_FINDINGS_DETECTED') %}badge-emerald{% else %}badge-muted{% endif %} mono" style="font-size: 0.7rem;">
+              Correlation: {{ dims.evidence_correlation }}
+            </span>
+          </div>
+        </div>
+
         <div style="border-top: 1px solid var(--border-subtle); padding-top: 0.5rem;">
           <div style="display: flex; justify-content: space-between; padding: 0.4rem 0; border-bottom: 1px solid var(--border-subtle);">
             <span>P &middot; Public Footprint (Disclosed emails, persons, documents)</span>
-            <span class="mono" style="font-weight: 700;">{{ score.P }} / 100</span>
+            <span class="mono" style="font-weight: 700;">
+              {{ score.P }}/100 <small style="color: var(--text-secondary); font-weight: normal;">(w: 20% &rarr; +{{ score.weighted_contributions.P if score.weighted_contributions else (score.P * 0.20)|round(1) }} pts)</small>
+            </span>
           </div>
           <div style="display: flex; justify-content: space-between; padding: 0.4rem 0; border-bottom: 1px solid var(--border-subtle);">
             <span>D &middot; Domain Hygiene (Subdomains, missing DMARC/SPF policy)</span>
-            <span class="mono" style="font-weight: 700;">{{ score.D }} / 100</span>
+            <span class="mono" style="font-weight: 700;">
+              {{ score.D }}/100 <small style="color: var(--text-secondary); font-weight: normal;">(w: 15% &rarr; +{{ score.weighted_contributions.D if score.weighted_contributions else (score.D * 0.15)|round(1) }} pts)</small>
+            </span>
           </div>
           <div style="display: flex; justify-content: space-between; padding: 0.4rem 0; border-bottom: 1px solid var(--border-subtle);">
             <span>S &middot; Service Exposure (Open ports, sensitive database listeners)</span>
-            <span class="mono" style="font-weight: 700;">{{ score.S }} / 100</span>
+            <span class="mono" style="font-weight: 700;">
+              {{ score.S }}/100 <small style="color: var(--text-secondary); font-weight: normal;">(w: 25% &rarr; +{{ score.weighted_contributions.S if score.weighted_contributions else (score.S * 0.25)|round(1) }} pts)</small>
+            </span>
           </div>
           <div style="display: flex; justify-content: space-between; padding: 0.4rem 0; border-bottom: 1px solid var(--border-subtle);">
             <span>V &middot; Vulnerability Severity (CVSS-rated Greenbone findings)</span>
-            <span class="mono" style="font-weight: 700;">{{ score.V }} / 100</span>
+            <span class="mono" style="font-weight: 700;">
+              {{ score.V }}/100 <small style="color: var(--text-secondary); font-weight: normal;">(w: 35% &rarr; +{{ score.weighted_contributions.V if score.weighted_contributions else (score.V * 0.35)|round(1) }} pts)</small>
+            </span>
           </div>
           <div style="display: flex; justify-content: space-between; padding: 0.4rem 0; border-bottom: 1px solid var(--border-subtle);">
-            <span>C &middot; Correlation Confidence (Cross-collector verification)</span>
-            <span class="mono" style="font-weight: 700;">{{ score.C }} / 100</span>
+            <span>C &middot; Correlation Confidence (Cross-collector verification & hashes)</span>
+            <span class="mono" style="font-weight: 700;">
+              {{ score.C }}/100 <small style="color: var(--text-secondary); font-weight: normal;">(w: 5% &rarr; +{{ score.weighted_contributions.C if score.weighted_contributions else (score.C * 0.05)|round(1) }} pts)</small>
+            </span>
           </div>
-          <div style="display: flex; justify-content: space-between; padding: 0.5rem 0; font-weight: 700; color: var(--brand-primary);">
-            <span>Total Calculated Exposure Score:</span>
+          <div style="display: flex; justify-content: space-between; padding: 0.5rem 0; font-weight: 700; color: var(--brand-primary); font-size: 0.92rem;">
+            <span>Composite Exposure Score:</span>
             <span class="mono">{{ score.total_score }} / 100 ({{ score.tier|upper }})</span>
           </div>
         </div>
+
+        {% if score_history and score_history|length > 1 %}
+        <details style="margin-top: 0.75rem; border-top: 1px solid var(--border-subtle); padding-top: 0.5rem;">
+          <summary style="cursor: pointer; color: var(--text-secondary); font-size: 0.75rem; font-weight: 600;">
+            View Calculation Audit History ({{ score_history|length }} records)
+          </summary>
+          <div style="margin-top: 0.4rem; max-height: 140px; overflow-y: auto;">
+            <table class="table" style="font-size: 0.72rem; margin: 0;">
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>Model</th>
+                  <th>Score</th>
+                  <th>Tier</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for hist in score_history %}
+                <tr>
+                  <td class="mono">{{ hist.created_at[:16] if hist.created_at else 'N/A' }}</td>
+                  <td class="mono">{{ hist.formula_version }}</td>
+                  <td class="mono" style="font-weight: 700;">{{ hist.total_score }}/100</td>
+                  <td>{{ hist.risk_tier }}</td>
+                  <td><span class="badge badge-muted mono" style="font-size: 0.65rem;">{{ hist.assessment_status }}</span></td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </details>
+        {% endif %}
       </div>
     </div>
 
@@ -832,7 +1341,31 @@ function switchTab(evt, tabId) {
     buttons[i].classList.remove("active");
   }
   document.getElementById(tabId).style.display = "block";
-  evt.currentTarget.classList.add("active");
+  if (evt && evt.currentTarget) {
+    evt.currentTarget.classList.add("active");
+  }
 }
+
+window.addEventListener("DOMContentLoaded", function() {
+  if (window.location.hash) {
+    var tabId = window.location.hash.substring(1);
+    var targetEl = document.getElementById(tabId);
+    if (targetEl && targetEl.classList.contains("tab-content")) {
+      var contents = document.getElementsByClassName("tab-content");
+      for (var i = 0; i < contents.length; i++) {
+        contents[i].style.display = "none";
+      }
+      var buttons = document.getElementsByClassName("tab-btn");
+      for (var i = 0; i < buttons.length; i++) {
+        buttons[i].classList.remove("active");
+        var onclickAttr = buttons[i].getAttribute("onclick") || "";
+        if (onclickAttr.indexOf("'" + tabId + "'") !== -1 || onclickAttr.indexOf('"' + tabId + '"') !== -1) {
+          buttons[i].classList.add("active");
+        }
+      }
+      targetEl.style.display = "block";
+    }
+  }
+});
 </script>
 {% endblock %}

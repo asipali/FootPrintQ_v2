@@ -189,6 +189,7 @@ class EvidenceResponse(BaseModel):
     source_name: str
     target: str
     collection_status: str
+    storage_backend: Optional[str] = "filesystem"
     content_hash: str
     content_size_bytes: int
     source_metadata: Dict[str, Any] = Field(default_factory=dict)

@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, case
 from urllib.parse import quote
 
 from app.config import get_settings
@@ -35,6 +35,7 @@ from app.core.auth import (
     change_user_password,
     log_audit_event,
     transition_investigator_account,
+    toggle_investigator_active_status,
 )
 from app.core.security import ROLE_ADMINISTRATOR, has_permission
 from app.services.scoring.calculator import ExposureScorer
@@ -47,6 +48,7 @@ from app.services.active.runner import get_nmap_runner, NmapExecutionError
 from app.services.active.profiles import get_scan_profile
 from app.services.vuln.orchestrator import get_vuln_orchestrator, VulnerabilityAssessmentError
 from app.services.vuln.profiles import get_vuln_profile
+from app.services.correlation.engine import CorrelationEngine
 
 import fastapi
 
@@ -309,6 +311,7 @@ def render_investigations(
     request: Request,
     q: Optional[str] = None,
     status: Optional[str] = None,
+    error: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     """Lists investigations with optional search query and status filter."""
@@ -337,6 +340,7 @@ def render_investigations(
         "investigations": investigations,
         "search_query": q,
         "status_filter": status,
+        "error": error,
     })
     return templates.TemplateResponse(request=request, name="investigations.html", context=ctx)
 
@@ -387,7 +391,13 @@ def handle_create_investigation(
             active_scanning_enabled=active_bool,
         )
     except ValidationError as exc:
-        raise StarletteHTTPException(status_code=422, detail="Invalid investigation details or target scope") from exc
+        err_msg = "; ".join([f"{err['loc'][-1]}: {err['msg']}" for err in exc.errors()])
+        accept = request.headers.get("accept", "")
+        content_type = request.headers.get("content-type", "")
+        if "text/html" in accept or "application/x-www-form-urlencoded" in content_type:
+            from urllib.parse import quote_plus
+            return RedirectResponse(f"/investigations?error={quote_plus(err_msg)}", status_code=303)
+        raise StarletteHTTPException(status_code=422, detail=f"Invalid investigation details or target scope: {err_msg}") from exc
 
     inv_id = f"inv-{uuid.uuid4().hex}"
     inv = InvestigationModel(
@@ -427,6 +437,7 @@ def handle_create_investigation(
 def render_investigation_detail(
     investigation_id: str,
     request: Request,
+    error: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     """Renders the comprehensive 8-tab investigation workspace."""
@@ -450,6 +461,12 @@ def render_investigation_detail(
         select(EvidenceModel).where(EvidenceModel.investigation_id == investigation_id).order_by(EvidenceModel.collected_at.desc())
     ).all()
 
+    scan_hosts = db.scalars(
+        select(ScanFindingHostModel)
+        .where(ScanFindingHostModel.investigation_id == investigation_id)
+        .order_by(ScanFindingHostModel.created_at.desc())
+    ).all()
+
     scan_ports = db.scalars(
         select(ScanFindingPortModel)
         .join(ScanFindingHostModel, ScanFindingPortModel.host_id == ScanFindingHostModel.id)
@@ -457,7 +474,12 @@ def render_investigation_detail(
     ).all()
 
     vuln_findings = db.scalars(
-        select(VulnerabilityFindingModel).where(VulnerabilityFindingModel.investigation_id == investigation_id).order_by(VulnerabilityFindingModel.cvss_score.desc().nullslast())
+        select(VulnerabilityFindingModel)
+        .where(VulnerabilityFindingModel.investigation_id == investigation_id)
+        .order_by(
+            case((VulnerabilityFindingModel.cvss_score.is_(None), 1), else_=0),
+            VulnerabilityFindingModel.cvss_score.desc(),
+        )
     ).all()
 
     collection_jobs = db.scalars(
@@ -474,18 +496,36 @@ def render_investigation_detail(
 
     # Calculate genuine 5-factor Exposure Score
     score = ExposureScorer.calculate_for_investigation(investigation_id, db=db)
+    score_history = ExposureScorer.get_score_history(investigation_id, db=db)
+    greenbone_diag = GreenboneClient().check_status()
+
+    # Load multi-source correlated asset & findings intelligence
+    try:
+        correlation_engine = CorrelationEngine(db)
+        correlation_data = correlation_engine.run_correlation(investigation_id)
+    except Exception as corr_exc:
+        logger.warning("Error running correlation engine for %s: %s", investigation_id, corr_exc)
+        correlation_data = {"summary": {}, "assets": [], "correlations": [], "unmatched_observations": [], "graph": {}}
 
     ctx.update({
         "inv": inv,
         "authorizations": authorizations,
         "entities": entities,
         "evidence_list": evidence_list,
+        "scan_hosts": scan_hosts,
         "scan_ports": scan_ports,
         "vuln_findings": vuln_findings,
         "collection_jobs": collection_jobs,
         "nmap_jobs": nmap_jobs,
         "vuln_jobs": vuln_jobs,
+        "greenbone_diag": greenbone_diag,
         "score": score,
+        "score_history": score_history,
+        "correlation_data": correlation_data,
+        "correlation_records": correlation_data.get("correlations", []),
+        "correlated_assets": correlation_data.get("assets", []),
+        "unmatched_observations": correlation_data.get("unmatched_observations", []),
+        "error": error,
     })
     return templates.TemplateResponse(request=request, name="investigation_detail.html", context=ctx)
 
@@ -530,10 +570,26 @@ def handle_create_authorization(
     in_scope, reason = is_target_in_investigation_scope(inv, payload.target)
     if not in_scope:
         raise StarletteHTTPException(status_code=422, detail=reason)
+
+    norm_target = normalize_target(payload.target)
+    existing_active = db.scalars(
+        select(TargetAuthorizationModel).where(
+            TargetAuthorizationModel.investigation_id == investigation_id,
+            TargetAuthorizationModel.target == norm_target,
+            TargetAuthorizationModel.is_revoked == False,
+            TargetAuthorizationModel.valid_to > now,
+        )
+    ).first()
+    if existing_active:
+        return RedirectResponse(
+            url=f"/investigations/{investigation_id}?error=An+active+authorization+already+exists+for+target+{quote_plus(payload.target)}+%28Ticket%3A+{quote_plus(existing_active.authorization_reference)}%29#tab-authorizations",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
     authz = TargetAuthorizationModel(
         id=f"authz-{uuid.uuid4().hex[:10]}",
         investigation_id=investigation_id,
-        target=normalize_target(payload.target),
+        target=norm_target,
         target_type=payload.target_type,
         allowed_operations=payload.allowed_operations,
         authorization_reference=payload.authorization_reference,
@@ -603,8 +659,16 @@ async def handle_trigger_passive_recon(
             outcome="FAILURE",
             details={"investigation_id": investigation_id, "target": target, "error": str(e)},
         )
+        accept = request.headers.get("accept", "")
+        content_type = request.headers.get("content-type", "")
+        if "text/html" in accept or "application/x-www-form-urlencoded" in content_type:
+            from urllib.parse import quote_plus
+            return RedirectResponse(
+                url=f"/investigations/{investigation_id}?error={quote_plus(str(e))}#tab-passive",
+                status_code=status.HTTP_303_SEE_OTHER
+            )
         raise StarletteHTTPException(status_code=403 if isinstance(e, PermissionError) else 400,
-                                     detail="Passive reconnaissance failed authorization or collection. Refresh the investigation to review job status.") from e
+                                     detail=str(e)) from e
 
     return RedirectResponse(
         url=f"/investigations/{investigation_id}#tab-passive",
@@ -651,7 +715,7 @@ async def handle_trigger_nmap_scan(
             client_ip=request.client.host if request.client else None,
             request_id=getattr(request.state, "request_id", None),
         ))
-    except NmapExecutionError as e:
+    except (NmapExecutionError, ValueError, PermissionError) as e:
         log_audit_event(
             db=db,
             event_type="ACTIVE_SCAN_LAUNCH_FAILED",
@@ -659,6 +723,14 @@ async def handle_trigger_nmap_scan(
             outcome="FAILURE",
             details={"investigation_id": investigation_id, "target": target, "error": str(e)},
         )
+        accept = request.headers.get("accept", "")
+        content_type = request.headers.get("content-type", "")
+        if "text/html" in accept or "application/x-www-form-urlencoded" in content_type:
+            from urllib.parse import quote_plus
+            return RedirectResponse(
+                url=f"/investigations/{investigation_id}?error={quote_plus(str(e))}#tab-active",
+                status_code=status.HTTP_303_SEE_OTHER
+            )
         raise StarletteHTTPException(status_code=403, detail="Nmap scan was not queued; verify tool availability, scope, and authorization.") from e
 
     return RedirectResponse(
@@ -701,7 +773,15 @@ async def handle_trigger_vuln_scan(
             actor_user=current_user, client_ip=request.client.host if request.client else None,
             request_id=getattr(request.state, "request_id", None),
         )
-    except (VulnerabilityAssessmentError, ValueError) as e:
+    except (VulnerabilityAssessmentError, ValueError, PermissionError) as e:
+        accept = request.headers.get("accept", "")
+        content_type = request.headers.get("content-type", "")
+        if "text/html" in accept or "application/x-www-form-urlencoded" in content_type:
+            from urllib.parse import quote_plus
+            return RedirectResponse(
+                url=f"/investigations/{investigation_id}?error={quote_plus(str(e))}#tab-vulns",
+                status_code=status.HTTP_303_SEE_OTHER
+            )
         raise StarletteHTTPException(status_code=403, detail="Assessment was not queued; verify target authorization and profile.") from e
 
     import asyncio
@@ -749,6 +829,45 @@ def handle_cancel_vuln_scan(
         raise StarletteHTTPException(status_code=409, detail="Assessment cancellation could not be completed.") from exc
 
     return RedirectResponse(url="/scans", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/investigations/{investigation_id}/workflow/run")
+async def handle_trigger_investigation_workflow(
+    investigation_id: str,
+    request: Request,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Triggers the full multi-stage investigation workflow via dashboard form."""
+    _validate_csrf(request, csrf_token)
+    inv = db.get(InvestigationModel, investigation_id)
+    if not inv:
+        raise StarletteHTTPException(status_code=404, detail="Investigation not found")
+
+    current_user = get_current_user_optional(request, db=db)
+    if not current_user:
+        raise StarletteHTTPException(status_code=401, detail="Authentication required")
+    if not has_permission(current_user.role, "investigation.create"):
+        raise StarletteHTTPException(status_code=403, detail="Investigation workflow launch permission required")
+    inv = require_investigation_access(inv, current_user)
+
+    from app.services.workflow.orchestrator import InvestigationWorkflowOrchestrator
+    orchestrator = InvestigationWorkflowOrchestrator(db=db)
+    try:
+        await orchestrator.execute_workflow(
+            investigation_id=investigation_id,
+            actor_user=current_user,
+            client_ip=request.client.host if request.client else None,
+            request_id=getattr(request.state, "request_id", None),
+        )
+    except Exception as e:
+        logger.warning("Investigation workflow execution warning for %s: %s", investigation_id, e)
+
+    return RedirectResponse(
+        url=f"/investigations/{investigation_id}#tab-overview",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
 
 
 # =============================================================================
@@ -898,13 +1017,20 @@ def render_investigator_approvals(
     admin: UserModel = Depends(require_role(ROLE_ADMINISTRATOR)),
     db: Session = Depends(get_db),
 ):
-    """Lists pending investigator registrations for administrators."""
+    """Lists pending and active investigator registrations for administrators."""
     ctx = _base_context(request, db=db, active_nav="approvals")
     ctx["pending_users"] = db.scalars(
         select(UserModel)
         .where(UserModel.role == "investigator", UserModel.account_status == "pending")
         .order_by(UserModel.created_at.asc())
     ).all()
+    ctx["active_investigators"] = db.scalars(
+        select(UserModel)
+        .where(UserModel.role == "investigator", UserModel.account_status == "active")
+        .order_by(UserModel.created_at.desc())
+    ).all()
+    admin_users = db.scalars(select(UserModel).where(UserModel.role == ROLE_ADMINISTRATOR)).all()
+    ctx["admin_lookup"] = {u.id: (u.full_name or u.username) for u in admin_users}
     ctx["message"] = request.query_params.get("message") or request.query_params.get("error")
     return templates.TemplateResponse(request=request, name="admin_investigators.html", context=ctx)
 
@@ -975,6 +1101,72 @@ def handle_investigator_rejection(
     )
 
 
+@router.post("/admin/investigators/{user_id}/deactivate")
+def handle_investigator_deactivation(
+    user_id: str,
+    request: Request,
+    csrf_token: str = Form(...),
+    admin: UserModel = Depends(require_role(ROLE_ADMINISTRATOR)),
+    db: Session = Depends(get_db),
+):
+    """Deactivates an active investigator."""
+    _validate_csrf(request, csrf_token)
+    user = db.get(UserModel, user_id)
+    if not user:
+        return RedirectResponse(
+            url="/admin/investigators?error=Investigator+not+found",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    try:
+        toggle_investigator_active_status(
+            db, user, admin, active=False,
+            request_id=getattr(request.state, "request_id", None),
+            client_ip=request.client.host if request.client else None,
+        )
+    except ValueError as exc:
+        return RedirectResponse(
+            url=f"/admin/investigators?error={quote(str(exc), safe='')}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    return RedirectResponse(
+        url="/admin/investigators?message=Investigator+deactivated",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/admin/investigators/{user_id}/activate")
+def handle_investigator_activation(
+    user_id: str,
+    request: Request,
+    csrf_token: str = Form(...),
+    admin: UserModel = Depends(require_role(ROLE_ADMINISTRATOR)),
+    db: Session = Depends(get_db),
+):
+    """Activates an inactive investigator."""
+    _validate_csrf(request, csrf_token)
+    user = db.get(UserModel, user_id)
+    if not user:
+        return RedirectResponse(
+            url="/admin/investigators?error=Investigator+not+found",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    try:
+        toggle_investigator_active_status(
+            db, user, admin, active=True,
+            request_id=getattr(request.state, "request_id", None),
+            client_ip=request.client.host if request.client else None,
+        )
+    except ValueError as exc:
+        return RedirectResponse(
+            url=f"/admin/investigators?error={quote(str(exc), safe='')}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    return RedirectResponse(
+        url="/admin/investigators?message=Investigator+activated",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 @router.get("/findings", response_class=HTMLResponse)
 def render_findings(
     request: Request,
@@ -1008,7 +1200,12 @@ def render_findings(
     if investigation_id and investigation_id.strip():
         query = query.where(VulnerabilityFindingModel.investigation_id == investigation_id.strip())
 
-    findings = db.scalars(query.order_by(VulnerabilityFindingModel.cvss_score.desc().nullslast())).all()
+    findings = db.scalars(
+        query.order_by(
+            case((VulnerabilityFindingModel.cvss_score.is_(None), 1), else_=0),
+            VulnerabilityFindingModel.cvss_score.desc(),
+        )
+    ).all()
     investigations = db.scalars(
         select(InvestigationModel).where(InvestigationModel.id.in_(accessible_investigations)).order_by(InvestigationModel.name.asc())
     ).all()
@@ -1102,6 +1299,19 @@ def handle_revoke_authorization(
     if authz.is_revoked:
         return RedirectResponse(url=f"/investigations/{inv.id}#tab-authorizations", status_code=status.HTTP_303_SEE_OTHER)
     authz.is_revoked = True
+
+    # Safeguard: cascade revocation to any unintended duplicate active records for same target
+    duplicate_records = db.scalars(
+        select(TargetAuthorizationModel).where(
+            TargetAuthorizationModel.investigation_id == authz.investigation_id,
+            TargetAuthorizationModel.target == authz.target,
+            TargetAuthorizationModel.id != authz.id,
+            TargetAuthorizationModel.is_revoked == False,
+        )
+    ).all()
+    for dup in duplicate_records:
+        dup.is_revoked = True
+
     db.commit()
 
     actor_id = current_user.id
@@ -1111,7 +1321,12 @@ def handle_revoke_authorization(
         event_type="TARGET_AUTHORIZATION_REVOKED",
         actor_id=actor_id,
         outcome="SUCCESS",
-        details={"authorization_id": authorization_id, "target": authz.target},
+        details={
+            "authorization_id": authorization_id,
+            "investigation_id": authz.investigation_id,
+            "target": authz.target,
+            "duplicates_revoked": [d.id for d in duplicate_records],
+        },
     )
 
     return RedirectResponse(url="/admin/authorizations", status_code=status.HTTP_303_SEE_OTHER)
