@@ -174,12 +174,14 @@ class PassiveReconOrchestrator:
             if coll_result.status != "NOT_CONFIGURED" or coll_result.raw_content:
                 evidence_id = f"evi-{uuid.uuid4().hex[:16]}"
                 try:
-                    rel_path, sha_hash, size_bytes = self.evidence_store.store_evidence(
+                    store_res = self.evidence_store.store_evidence(
                         investigation_id=self.investigation_id,
                         evidence_id=evidence_id,
                         source_type=coll_result.source_type,
                         content=coll_result.raw_content,
                     )
+                    rel_path, sha_hash, size_bytes = store_res
+                    actual_backend = getattr(store_res, "backend", self.evidence_store.last_backend_used)
                 except Exception as store_err:
                     logger.exception("Could not persist evidence for collection job %s", job.id)
                     job.status = "FAILED"
@@ -197,6 +199,7 @@ class PassiveReconOrchestrator:
                     target=clean_target,
                     collection_status=coll_result.status,
                     raw_content_path=rel_path,
+                    storage_backend=actual_backend,
                     content_hash=sha_hash,
                     content_size_bytes=size_bytes,
                     source_metadata=coll_result.source_metadata or {},

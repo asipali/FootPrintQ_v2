@@ -16,8 +16,9 @@ if str(app_dir) not in sys.path:
     sys.path.insert(0, str(app_dir))
 
 from app.config import Settings
-from app.database import Base, get_db
+from app.database import Base, get_db, check_database_connection
 from app.main import create_app
+import app.main as main_module
 
 
 @pytest.fixture(scope="session")
@@ -32,11 +33,51 @@ def test_settings(tmp_path_factory) -> Settings:
         APP_ENV="test",
         DEBUG=True,
         DATABASE_URL=f"sqlite:///{db_path}",
+        STORAGE_BACKEND="filesystem",
+        EVIDENCE_STORAGE_PATH=str(temp_dir / "evidence_storage"),
         SECRET_KEY="test-secret-key-for-unit-testing-only-12345",
         LOG_LEVEL="WARNING",
         LOG_FORMAT="standard",
         DEMO_ACCOUNTS_ENABLED=False,
+        GVM_HOST="",
     )
+
+
+@pytest.fixture
+def isolated_test_settings(test_settings: Settings, tmp_path: Path) -> Settings:
+    """Settings for one test with a private evidence root below pytest's temp directory."""
+    return test_settings.model_copy(
+        update={"EVIDENCE_STORAGE_PATH": str(tmp_path / "evidence_storage")}
+    )
+
+
+@pytest.fixture(autouse=True)
+def isolated_evidence_storage(
+    isolated_test_settings: Settings, test_engine, monkeypatch
+):
+    """Route every implicit EvidenceStore construction to per-test temporary storage."""
+    import app.services.evidence_store as evidence_store_module
+
+    monkeypatch.setattr(
+        evidence_store_module,
+        "get_settings",
+        lambda: isolated_test_settings,
+    )
+    monkeypatch.setattr(evidence_store_module, "_default_store", None)
+    from app.config import settings as global_settings
+    monkeypatch.setattr(global_settings, "GVM_HOST", None)
+    # The app lifespan otherwise probes the module-global engine, which points
+    # at the user's configured database. Keep even startup probes on test DB.
+    monkeypatch.setattr(
+        main_module,
+        "check_database_connection",
+        lambda target=None, engine_override=None: check_database_connection(
+            target=target,
+            engine_override=engine_override
+            or (test_engine if target is None else None),
+        ),
+    )
+    return Path(isolated_test_settings.EVIDENCE_STORAGE_PATH)
 
 
 @pytest.fixture(scope="session")
@@ -77,9 +118,9 @@ def db_session(test_engine) -> Generator[Session, None, None]:
 
 
 @pytest.fixture
-def client(test_settings: Settings, db_session: Session) -> Generator[TestClient, None, None]:
+def client(isolated_test_settings: Settings, db_session: Session) -> Generator[TestClient, None, None]:
     """TestClient configured with test settings and isolated database session override."""
-    app = create_app(settings=test_settings)
+    app = create_app(settings=isolated_test_settings)
 
     # Override get_db dependency
     def override_get_db():
@@ -89,6 +130,9 @@ def client(test_settings: Settings, db_session: Session) -> Generator[TestClient
             pass
 
     app.dependency_overrides[get_db] = override_get_db
+
+    from app.core.rate_limit import auth_rate_limiter
+    auth_rate_limiter.reset()
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client

@@ -17,6 +17,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    is_mssql = op.get_bind().dialect.name == "mssql"
     op.add_column("users", sa.Column("full_name", sa.String(length=128), nullable=True))
     op.add_column(
         "users",
@@ -34,7 +35,7 @@ def upgrade() -> None:
             sa.Column(
                 "approved_by_id",
                 sa.String(length=64),
-                sa.ForeignKey("users.id", ondelete="SET NULL"),
+                sa.ForeignKey("users.id", ondelete="NO ACTION" if is_mssql else "SET NULL"),
                 nullable=True,
             ),
         )
@@ -50,7 +51,7 @@ def upgrade() -> None:
             sa.Column(
                 "rejected_by_id",
                 sa.String(length=64),
-                sa.ForeignKey("users.id", ondelete="SET NULL"),
+                sa.ForeignKey("users.id", ondelete="NO ACTION" if is_mssql else "SET NULL"),
                 nullable=True,
             ),
         )

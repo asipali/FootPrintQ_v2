@@ -18,6 +18,20 @@ from app.models.vulnerability import (
     VulnerabilityScanJobModel,
     VulnerabilityFindingModel,
 )
+from app.models.correlation import CorrelationRecordModel
+from app.models.exposure_score import ExposureScoreModel
+from app.models.job import (
+    JobModel,
+    JOB_STATUS_QUEUED,
+    JOB_STATUS_CLAIMED,
+    JOB_STATUS_RUNNING,
+    JOB_STATUS_COMPLETED,
+    JOB_STATUS_FAILED,
+    JOB_STATUS_RETRY_WAIT,
+    JOB_STATUS_CANCEL_REQUESTED,
+    JOB_STATUS_CANCELLED,
+    JOB_STATUS_TIMED_OUT,
+)
 
 __all__ = [
     "InvestigationModel",
@@ -33,5 +47,16 @@ __all__ = [
     "ScanFindingPortModel",
     "VulnerabilityScanJobModel",
     "VulnerabilityFindingModel",
+    "CorrelationRecordModel",
+    "ExposureScoreModel",
+    "JobModel",
+    "JOB_STATUS_QUEUED",
+    "JOB_STATUS_CLAIMED",
+    "JOB_STATUS_RUNNING",
+    "JOB_STATUS_COMPLETED",
+    "JOB_STATUS_FAILED",
+    "JOB_STATUS_RETRY_WAIT",
+    "JOB_STATUS_CANCEL_REQUESTED",
+    "JOB_STATUS_CANCELLED",
+    "JOB_STATUS_TIMED_OUT",
 ]
-

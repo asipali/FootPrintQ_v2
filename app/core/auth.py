@@ -40,6 +40,12 @@ def log_audit_event(
     for secret_key in ("password", "token", "secret", "cookie", "access_token"):
         sanitized_details.pop(secret_key, None)
 
+    # Safely extract string IDs if model instances are inadvertently passed
+    if hasattr(actor_id, "id") and not isinstance(actor_id, str):
+        actor_id = getattr(actor_id, "id", None)
+    if hasattr(target_user_id, "id") and not isinstance(target_user_id, str):
+        target_user_id = getattr(target_user_id, "id", None)
+
     audit_entry = AuditLogModel(
         id=f"audit-{uuid.uuid4().hex[:16]}",
         event_type=event_type,
@@ -370,6 +376,34 @@ def transition_investigator_account(
         request_id=request_id,
         ip_address=client_ip,
         details={"email": target.email},
+    )
+    return target
+
+
+def toggle_investigator_active_status(
+    db: Session,
+    target: UserModel,
+    admin: UserModel,
+    active: bool,
+    request_id: Optional[str] = None,
+    client_ip: Optional[str] = None,
+) -> UserModel:
+    """Toggles active/inactive status for an approved investigator account."""
+    if target.role != ROLE_INVESTIGATOR or target.account_status != "active":
+        raise ValueError("Only active investigator accounts can have their active status modified.")
+    target.is_active = active
+    db.commit()
+    db.refresh(target)
+    event_type = "INVESTIGATOR_ACTIVATED" if active else "INVESTIGATOR_DEACTIVATED"
+    log_audit_event(
+        db=db,
+        event_type=event_type,
+        outcome="SUCCESS",
+        actor_id=admin.id,
+        target_user_id=target.id,
+        request_id=request_id,
+        ip_address=client_ip,
+        details={"email": target.email, "is_active": target.is_active},
     )
     return target
 

@@ -39,10 +39,11 @@ class VulnProfile:
 
 
 # Standard predefined GVM scan config UUIDs
-# Base: daba56c8-73ec-11df-a475-002264764ceb
+# Base: d21f6c81-2b88-4ac1-b7b4-a2a9f2ad4663
 # Full and fast: daba56c8-73ec-11df-a475-002264764cea
-# Discovery: daba56c8-73ec-11df-a475-002264764cec
-# System Discovery: 8715c877-47a0-438d-98a3-27c7a6ab2196
+# Discovery: 8715c877-47a0-438d-98a3-27c7a6ab2196
+# Host Discovery: 2d3f051c-55ba-11e3-bf43-406186ea4fc5
+# System Discovery: bbca7412-a950-11e3-9109-406186ea4fc5
 
 VULN_PROFILES: Dict[str, VulnProfile] = {
     "openvas-basic": VulnProfile(
@@ -50,7 +51,7 @@ VULN_PROFILES: Dict[str, VulnProfile] = {
         name="Greenbone Base / Conservative Assessment",
         description="Non-destructive vulnerability scan evaluating core network service vulnerabilities and misconfigurations.",
         gvm_config_name="Base",
-        gvm_config_id="daba56c8-73ec-11df-a475-002264764ceb",
+        gvm_config_id="d21f6c81-2b88-4ac1-b7b4-a2a9f2ad4663",
         intended_use="Authorized lab targets and sensitive hosts requiring safe, non-invasive assessment.",
         allowed_target_types=["ipv4", "hostname"],
         timeout_seconds=1800,
@@ -78,7 +79,7 @@ VULN_PROFILES: Dict[str, VulnProfile] = {
         name="Greenbone Service & OS Discovery",
         description="Lightweight scan to enumerate services, operating systems, and basic security postures.",
         gvm_config_name="Discovery",
-        gvm_config_id="daba56c8-73ec-11df-a475-002264764cec",
+        gvm_config_id="8715c877-47a0-438d-98a3-27c7a6ab2196",
         intended_use="Pre-assessment network discovery and asset posture inventory.",
         allowed_target_types=["ipv4", "hostname"],
         timeout_seconds=900,
@@ -87,12 +88,40 @@ VULN_PROFILES: Dict[str, VulnProfile] = {
         operational_restrictions="Network discovery only, no vulnerability exploits attempted.",
         version="1.0",
     ),
+    "openvas-host-discovery": VulnProfile(
+        id="openvas-host-discovery",
+        name="Greenbone Host Discovery",
+        description="Non-intrusive host discovery detecting alive hosts without deep service exploitation.",
+        gvm_config_name="Host Discovery",
+        gvm_config_id="2d3f051c-55ba-11e3-bf43-406186ea4fc5",
+        intended_use="Fast, non-invasive discovery of authorized network interfaces and alive assets.",
+        allowed_target_types=["ipv4", "hostname"],
+        timeout_seconds=600,
+        max_hosts=32,
+        is_enabled=True,
+        operational_restrictions="Ping and ICMP/TCP echo only, zero vulnerability exploitation.",
+        version="1.0",
+    ),
 }
 
 
 def get_vuln_profile(profile_id: str) -> Optional[VulnProfile]:
-    """Retrieve an approved vulnerability assessment profile by stable ID."""
-    return VULN_PROFILES.get(profile_id)
+    """Retrieve an approved vulnerability assessment profile by stable ID or alias."""
+    if not profile_id:
+        return None
+    cleaned = str(profile_id).strip().lower()
+    if cleaned in VULN_PROFILES:
+        return VULN_PROFILES[cleaned]
+    aliases = {
+        "full_and_fast": "openvas-full-and-fast",
+        "full-and-fast": "openvas-full-and-fast",
+        "basic": "openvas-basic",
+        "discovery": "openvas-discovery",
+    }
+    target_id = aliases.get(cleaned)
+    if target_id and target_id in VULN_PROFILES:
+        return VULN_PROFILES[target_id]
+    return None
 
 
 def list_vuln_profiles(include_disabled: bool = False) -> List[VulnProfile]:

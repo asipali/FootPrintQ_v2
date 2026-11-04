@@ -26,7 +26,7 @@ from app.models.investigation import InvestigationModel
 from app.models.recon import EntityModel, EvidenceModel, TargetAuthorizationModel, ensure_utc, utc_now
 from app.models.vulnerability import VulnerabilityFindingModel, VulnerabilityScanJobModel
 from app.models.user import UserModel
-from app.services.evidence_store import EvidenceStore
+from app.services.evidence_store import EvidenceStore, get_evidence_store
 from app.services.target_authorization import classify_target, verify_target_authorization
 from app.services.vuln.normalizer import (
     generate_finding_deduplication_key,
@@ -317,7 +317,7 @@ class VulnerabilityAssessmentOrchestrator:
                 )
             return
 
-        if status_val != GreenboneConnectionStatus.READY.value:
+        if status_val not in (GreenboneConnectionStatus.HEALTHY.value, "READY", "HEALTHY"):
             err_msg = availability.get("error") or f"Greenbone service status is {status_val}"
             with ctx() as db:
                 self._update_job_status(
@@ -555,14 +555,16 @@ class VulnerabilityAssessmentOrchestrator:
             # 8. Persist Raw Evidence & Findings
             with ctx() as db:
                 # Store report evidence in EvidenceStore
-                evidence_store = EvidenceStore()
+                evidence_store = get_evidence_store()
                 evidence_id = f"evi-{uuid.uuid4().hex[:12]}"
-                stored_ref, content_hash, size_bytes = evidence_store.store_evidence(
+                store_res = evidence_store.store_evidence(
                     investigation_id=investigation_id,
                     evidence_id=evidence_id,
                     source_type="greenbone_openvas",
                     content=report_xml,
                 )
+                stored_ref, content_hash, size_bytes = store_res
+                actual_backend = getattr(store_res, "backend", evidence_store.last_backend_used)
 
                 evidence = EvidenceModel(
                     id=evidence_id,
@@ -573,6 +575,7 @@ class VulnerabilityAssessmentOrchestrator:
                     target=target,
                     collection_status="SUCCESS",
                     raw_content_path=stored_ref,
+                    storage_backend=actual_backend,
                     content_hash=content_hash,
                     content_size_bytes=size_bytes,
                     source_metadata={"job_id": job_id, "profile_id": profile_id},

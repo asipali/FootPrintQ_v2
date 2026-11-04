@@ -18,7 +18,7 @@ from app.schemas.recon import (
     TargetValidationRequest,
     TargetValidationResponse,
 )
-from app.api.deps import get_current_user, require_permission
+from app.api.deps import get_current_user, require_permission, verify_csrf_token
 from app.services.passive.orchestrator import PassiveReconOrchestrator
 from app.services.evidence_store import get_evidence_store
 from app.services.target_authorization import (
@@ -42,6 +42,7 @@ async def trigger_passive_recon(
     payload: PassiveReconRequest,
     request: Request,
     current_user: UserModel = Depends(require_permission("recon.passive")),
+    csrf_ok: None = Depends(verify_csrf_token),
     db: Session = Depends(get_db),
 ):
     """Triggers passive reconnaissance pipeline with strict authorization and isolated collector execution."""
@@ -90,6 +91,7 @@ def validate_target(
     payload: TargetValidationRequest,
     request: Request,
     current_user: UserModel = Depends(require_permission("investigation.view")),
+    csrf_ok: None = Depends(verify_csrf_token),
     db: Session = Depends(get_db),
 ):
     """Validates target classification, scope membership, and authorization validity."""
@@ -212,7 +214,10 @@ def get_raw_evidence(
 
     store = get_evidence_store()
     try:
-        content_bytes, computed_hash = store.read_evidence(evidence.raw_content_path)
+        content_bytes, computed_hash = store.read_evidence(
+            evidence.raw_content_path,
+            backend=evidence.storage_backend,
+        )
     except FileNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence file missing on server")
     except Exception:
@@ -236,5 +241,6 @@ def get_raw_evidence(
             "X-Content-SHA256": evidence.content_hash,
             "X-Computed-SHA256": computed_hash,
             "X-Evidence-Integrity": "VERIFIED",
+            "X-Evidence-Storage-Backend": evidence.storage_backend or "filesystem",
         },
     )

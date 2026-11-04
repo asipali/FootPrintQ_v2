@@ -17,6 +17,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    is_mssql = op.get_bind().dialect.name == "mssql"
     # 1. target_authorizations table
     op.create_table(
         "target_authorizations",
@@ -78,7 +79,7 @@ def upgrade() -> None:
         sa.Column("source_metadata", sa.JSON(), nullable=False),
         sa.Column("collected_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["investigation_id"], ["investigations.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["job_id"], ["collection_jobs.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(["job_id"], ["collection_jobs.id"], ondelete="NO ACTION" if is_mssql else "SET NULL"),
         sa.PrimaryKeyConstraint("id")
     )
     op.create_index(op.f("ix_evidence_id"), "evidence", ["id"], unique=False)

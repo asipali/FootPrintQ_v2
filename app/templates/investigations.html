@@ -13,6 +13,12 @@
   </a>
 </div>
 
+{% if error %}
+<div class="alert alert-danger" style="background: rgba(239, 68, 68, 0.15); border: 1px solid var(--accent-red, #ef4444); color: #fca5a5; padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1.25rem; font-size: 0.85rem;">
+  <strong>Validation Notice:</strong> {{ error }}
+</div>
+{% endif %}
+
 <!-- Search & Filtering Bar -->
 <div class="card" style="margin-bottom: 1.25rem;">
   <div class="card-body" style="padding: 0.85rem 1.25rem;">

@@ -16,9 +16,10 @@ class LivenessResponse(BaseModel):
 
 
 class ReadinessResponse(BaseModel):
-    """Readiness probe verifying operational state including database connectivity."""
+    """Readiness probe verifying operational state including database connectivity and storage."""
     status: str = Field(..., description="Overall readiness: 'ready' or 'not_ready'")
     database: str = Field(..., description="Database connection state: 'connected' or 'disconnected'")
+    storage: Optional[str] = Field(default="connected", description="Storage state: 'connected', 'degraded', or 'disconnected'")
     timestamp: str = Field(default_factory=utc_now_iso, description="UTC timestamp of the probe")
     details: Optional[str] = Field(default=None, description="Diagnostic summary without sensitive details")
 

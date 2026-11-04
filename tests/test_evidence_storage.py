@@ -3,6 +3,8 @@
 import pytest
 import hashlib
 from pathlib import Path
+import uuid
+from app.config import get_settings
 from app.services.evidence_store import EvidenceStore
 
 
@@ -65,3 +67,77 @@ def test_evidence_store_does_not_overwrite_reused_identifier(tmp_path):
     data, stored_hash = store.read_evidence(rel_path)
     assert data == b"original"
     assert stored_hash == original_hash
+
+
+def test_default_store_uses_isolated_temp_root_not_configured_evidence_path(
+    isolated_evidence_storage,
+):
+    """Implicit evidence writes in tests cannot reach configured persistent storage."""
+    store = EvidenceStore()
+    configured_root = Path(get_settings().EVIDENCE_STORAGE_PATH).resolve()
+    test_root = Path(isolated_evidence_storage).resolve()
+    unique_id = f"evi-isolation-{uuid.uuid4().hex}"
+
+    assert store.base_dir == test_root
+    assert store.base_dir != configured_root
+
+    relative_path, _, _ = store.store_evidence(
+        investigation_id=f"inv-isolation-{uuid.uuid4().hex}",
+        evidence_id=unique_id,
+        source_type="TEST",
+        content={"isolated": True},
+    )
+
+    assert (test_root / relative_path).is_file()
+    assert not (configured_root / relative_path).exists()
+
+
+def test_evidence_read_reports_tampered_content_hash(tmp_path):
+    store = EvidenceStore(base_path=str(tmp_path))
+    relative_path, original_hash, _ = store.store_evidence(
+        "inv-integrity", "evi-integrity", "TEST", "original"
+    )
+    stored_file = tmp_path / relative_path
+    stored_file.write_bytes(b"tampered")
+
+    content, computed_hash = store.read_evidence(relative_path)
+
+    assert content == b"tampered"
+    assert computed_hash != original_hash
+
+
+
+def test_evidence_store_exists_and_metadata_and_delete(tmp_path):
+    store = EvidenceStore(base_path=str(tmp_path))
+    inv_id = "inv-meta-test"
+    evi_id = "evi-meta-999"
+    payload = "Important forensic artifact"
+
+    rel_path, sha_hash, size_bytes = store.store_evidence(
+        investigation_id=inv_id,
+        evidence_id=evi_id,
+        source_type="HTTP",
+        content=payload,
+    )
+
+    # 1. Test existence
+    assert store.evidence_exists(rel_path) is True
+    assert store.evidence_exists(f"{inv_id}/non_existent.txt") is False
+    assert store.evidence_exists("../outside.txt") is False
+
+    # 2. Test metadata
+    meta = store.get_evidence_metadata(rel_path)
+    assert meta.key == rel_path
+    assert meta.content_hash == sha_hash
+    assert meta.size_bytes == size_bytes
+    assert meta.backend == "filesystem"
+
+    # 3. Test streaming read
+    chunks = list(store.read_evidence_stream(rel_path, chunk_size=4))
+    reconstructed = b"".join(chunks)
+    assert reconstructed == payload.encode("utf-8")
+
+    # 4. Test delete
+    assert store.delete_evidence(rel_path) is True
+    assert store.evidence_exists(rel_path) is False
+    assert store.delete_evidence(rel_path) is False

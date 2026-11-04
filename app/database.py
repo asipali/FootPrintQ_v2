@@ -19,19 +19,18 @@ def build_engine(database_url: str):
     """Builds an engine configured specifically for the target database dialect."""
     connect_args = {}
     is_sqlite = database_url.startswith("sqlite")
+    is_mssql = database_url.startswith("mssql")
 
     if is_sqlite:
         # SQLite needs check_same_thread=False for async FastAPI request thread pools
         connect_args["check_same_thread"] = False
+        engine = create_engine(
+            database_url,
+            connect_args=connect_args,
+            pool_pre_ping=True,  # Proactively test dead connections
+            echo=False
+        )
 
-    engine = create_engine(
-        database_url,
-        connect_args=connect_args,
-        pool_pre_ping=True,  # Proactively test dead connections
-        echo=False
-    )
-
-    if is_sqlite:
         # Enforce foreign key constraints and Write-Ahead Logging (WAL) in SQLite
         @event.listens_for(engine, "connect")
         def set_sqlite_pragma(dbapi_connection, connection_record):
@@ -41,12 +40,72 @@ def build_engine(database_url: str):
             cursor.execute("PRAGMA synchronous=NORMAL")
             cursor.close()
 
-    return engine
+        return engine
+
+    elif is_mssql:
+        # Microsoft SQL Server 2022 Express engine with fast_executemany and pool pre-ping
+        engine = create_engine(
+            database_url,
+            fast_executemany=True,
+            pool_size=10,
+            max_overflow=20,
+            pool_pre_ping=True,
+            pool_recycle=1800,
+            echo=False
+        )
+        return engine
+
+    return create_engine(database_url, pool_pre_ping=True, echo=False)
 
 
 # Centralized engine and sessionmaker
+from app.core.db_retry import is_deadlock_error, retry_on_deadlock, run_with_deadlock_retry
+
 settings = get_settings()
-engine = build_engine(settings.DATABASE_URL)
+
+
+def init_engine(target_settings=None) -> Engine:
+    """Initializes and returns configured database engine with strict production guards."""
+    cfg = target_settings or get_settings()
+    is_production_or_staging = cfg.APP_ENV in {"staging", "production"}
+
+    try:
+        eng = build_engine(cfg.DATABASE_URL)
+        # In staging/production or when non-sqlite, proactively probe database
+        if is_production_or_staging or not cfg.is_sqlite:
+            with eng.connect() as probe_conn:
+                probe_conn.execute(text("SELECT 1"))
+        return eng
+    except Exception as exc:
+        # Strictly forbid fallback in staging and production to prevent split-brain state
+        if is_production_or_staging or not getattr(cfg, "DB_FALLBACK_TO_SQLITE", False):
+            logger.critical(
+                "Primary database connection to %s failed in %s environment: %s. SQLite fallback is locked out.",
+                cfg.DATABASE_URL.split("@")[-1] if "@" in cfg.DATABASE_URL else "relational",
+                cfg.APP_ENV,
+                exc,
+            )
+            raise RuntimeError(
+                f"Database connection failed in {cfg.APP_ENV} environment: {exc}. "
+                "SQLite fallback is strictly forbidden in staging/production."
+            ) from exc
+
+        logger.warning(
+            "Primary database connection failed: %s. Falling back to local SQLite in %s environment.",
+            exc,
+            cfg.APP_ENV,
+        )
+        return build_engine("sqlite:///./footprintiq.db")
+
+
+try:
+    engine = init_engine(settings)
+except Exception:
+    # If during import in staging/production, keep engine as None or re-raise if not in test
+    if settings.APP_ENV in {"staging", "production"}:
+        raise
+    engine = build_engine("sqlite:///./footprintiq.db")
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

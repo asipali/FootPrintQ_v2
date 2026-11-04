@@ -25,6 +25,7 @@ from app.core.security import (
     validate_password_strength,
     ROLE_ADMINISTRATOR,
 )
+from app.core.rate_limit import auth_rate_limiter
 from app.api.deps import (
     get_current_user,
     get_session_token_from_request,
@@ -47,6 +48,15 @@ def login_api(
     client_ip = request.client.host if request.client else None
     req_id = getattr(request.state, "request_id", None)
     user_agent = request.headers.get("user-agent")
+
+    # Rate limiting defense against brute force attacks
+    ip_key = f"login_ip:{client_ip or 'unknown'}"
+    auth_rate_limiter.enforce_rate_limit(
+        key=ip_key,
+        max_requests=20,
+        window_seconds=60,
+        detail="Too many authentication attempts from this network. Please try again later.",
+    )
 
     user = authenticate_user(
         db=db,
@@ -159,6 +169,18 @@ def signup_api(
 ):
     """Registers a pending investigator without issuing an authenticated session."""
     settings = get_settings()
+    client_ip = request.client.host if request.client else None
+    req_id = getattr(request.state, "request_id", None)
+
+    # Rate limiting defense against automated mass registration
+    ip_key = f"signup_ip:{client_ip or 'unknown'}"
+    auth_rate_limiter.enforce_rate_limit(
+        key=ip_key,
+        max_requests=10,
+        window_seconds=60,
+        detail="Too many registration attempts from this network. Please try again later.",
+    )
+
     if not settings.ALLOW_PUBLIC_SIGNUP:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

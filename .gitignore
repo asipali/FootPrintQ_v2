@@ -38,6 +38,8 @@ venv.bak/
 *.db
 *.db-journal
 *.db-wal
+*.db-shm
+*.db.backup*
 *.sqlite
 *.sqlite3
 
@@ -60,6 +62,7 @@ Thumbs.db
 logs/
 *.log
 reports/
+!docs/reports/
 exports/
 
 # Legacy frontend local state (preserved)

@@ -18,10 +18,16 @@
   <div class="card">
     <div class="card-header">
       <h3 class="card-title">Greenbone Vulnerability Manager (GMP)</h3>
-      {% if greenbone_diag.status == 'READY' %}
-        <span class="badge badge-emerald">READY</span>
+      {% if greenbone_diag.status in ['HEALTHY', 'READY'] %}
+        <span class="badge badge-emerald">HEALTHY</span>
       {% elif greenbone_diag.status == 'NOT_CONFIGURED' %}
         <span class="badge badge-info">NOT CONFIGURED</span>
+      {% elif greenbone_diag.status == 'AUTHENTICATION_FAILED' %}
+        <span class="badge badge-crit">AUTH FAILED</span>
+      {% elif greenbone_diag.status == 'UNREACHABLE' %}
+        <span class="badge badge-crit">UNREACHABLE</span>
+      {% elif greenbone_diag.status == 'SCANNER_UNAVAILABLE' %}
+        <span class="badge badge-warning">SCANNER UNAVAILABLE</span>
       {% else %}
         <span class="badge badge-crit">{{ greenbone_diag.status }}</span>
       {% endif %}
@@ -32,15 +38,26 @@
         <strong style="margin-left: 0.5rem;">{{ greenbone_diag.connection_mode or 'None' }}</strong>
       </div>
       <div style="margin-bottom: 0.75rem;">
-        <span class="mono" style="color: var(--text-muted);">GVM Version:</span>
+        <span class="mono" style="color: var(--text-muted);">GMP Protocol Version:</span>
         <span class="mono" style="margin-left: 0.5rem; font-weight: 600;">{{ greenbone_diag.version or 'Unavailable' }}</span>
+      </div>
+      <div style="margin-bottom: 0.75rem;">
+        <span class="mono" style="color: var(--text-muted);">Default Scanner:</span>
+        <strong style="margin-left: 0.5rem;">{{ greenbone_diag.scanner_name or 'None' }}</strong>
+        {% if greenbone_diag.scanner_status %}
+          <span class="mono" style="margin-left: 0.5rem; font-size: 0.75rem; color: var(--emerald-primary);">({{ greenbone_diag.scanner_status }})</span>
+        {% endif %}
+      </div>
+      <div style="margin-bottom: 0.75rem;">
+        <span class="mono" style="color: var(--text-muted);">Last Checked:</span>
+        <span class="mono" style="margin-left: 0.5rem; font-size: 0.75rem;">{{ greenbone_diag.last_checked_at or 'Not checked' }}</span>
       </div>
       <div style="margin-bottom: 0.75rem;">
         <span class="mono" style="color: var(--text-muted);">Diagnostic Message:</span>
         <p style="color: var(--text-secondary); margin-top: 0.25rem;">{{ greenbone_diag.message }}</p>
       </div>
       <div style="background: var(--bg-secondary); padding: 0.65rem; border-radius: var(--radius-sm); font-size: 0.75rem; color: var(--text-muted);">
-        Honest Integration Policy: If GVM is not running or unconfigured, FootprintIQ reports UNAVAILABLE or NOT_CONFIGURED rather than fabricating synthetic findings.
+        Honest Integration Policy: If GVM is not running, unconfigured, or fails scanner verification, FootprintIQ reports granular health without fabricating synthetic findings.
       </div>
     </div>
   </div>
@@ -49,10 +66,12 @@
   <div class="card">
     <div class="card-header">
       <h3 class="card-title">Active Nmap Reconnaissance Engine</h3>
-      {% if nmap_diag.available %}
+      {% if nmap_diag.status == 'READY' %}
         <span class="badge badge-emerald">READY</span>
-      {% else %}
+      {% elif nmap_diag.status == 'NOT_FOUND' %}
         <span class="badge badge-amber">NOT FOUND</span>
+      {% else %}
+        <span class="badge badge-crit">{{ nmap_diag.status }}</span>
       {% endif %}
     </div>
     <div class="card-body" style="font-size: 0.82rem;">

@@ -22,6 +22,7 @@
         <tr>
           <th>Evidence ID</th>
           <th>Source Subsystem</th>
+          <th>Storage Backend</th>
           <th>Collector / Tool</th>
           <th>Target</th>
           <th>Size</th>
@@ -29,6 +30,7 @@
           <th>Cryptographic SHA-256 Digest</th>
           <th>Investigation</th>
           <th>Captured</th>
+          <th>Action</th>
         </tr>
       </thead>
       <tbody>
@@ -36,6 +38,15 @@
         <tr>
           <td class="mono" style="font-weight: 600; color: var(--brand-primary);">{{ ev.id }}</td>
           <td><span class="badge badge-brand">{{ ev.source_type }}</span></td>
+          <td>
+            {% if ev.storage_backend == 'seaweedfs' %}
+              <span class="badge badge-emerald">SEAWEEDFS</span>
+            {% elif ev.storage_backend == 'filesystem' %}
+              <span class="badge badge-amber">FILESYSTEM</span>
+            {% else %}
+              <span class="badge badge-muted">{{ ev.storage_backend|upper if ev.storage_backend else 'FILESYSTEM' }}</span>
+            {% endif %}
+          </td>
           <td>{{ ev.source_name }}</td>
           <td class="mono" style="font-size: 0.78rem;">{{ ev.target }}</td>
           <td class="mono" style="font-size: 0.75rem;">{{ ev.content_size_bytes }} B</td>
@@ -50,6 +61,15 @@
           </td>
           <td class="mono" style="font-size: 0.75rem; color: var(--text-secondary);">
             {{ ev.collected_at.strftime('%Y-%m-%d %H:%M') if ev.collected_at else 'N/A' }}
+          </td>
+          <td>
+            {% if ev.raw_content_path %}
+              <a href="/api/v1/investigations/{{ ev.investigation_id }}/evidence/{{ ev.id }}/raw" class="btn btn-secondary btn-sm" target="_blank" style="padding: 2px 8px; font-size: 0.72rem; text-decoration: none;">
+                Download
+              </a>
+            {% else %}
+              <span style="color: var(--text-muted); font-size: 0.75rem;">—</span>
+            {% endif %}
           </td>
         </tr>
         {% endfor %}

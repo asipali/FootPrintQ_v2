@@ -17,6 +17,8 @@ if (!(Test-Path .env)) { Copy-Item .env.example .env }
 python -m alembic upgrade head
 python scripts/provision_demo_accounts.py
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+# Or launch directly using the automated platform lifecycle script:
+# .\scripts\start_footprintiq.ps1
 ```
 
 The local demo passwords are configured in `.env`; keep this setting disabled and use separately managed credentials in production.

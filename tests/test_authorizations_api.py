@@ -91,3 +91,83 @@ def test_viewer_cannot_create_target_authorization(client, test_investigation, v
     )
     # Viewers do not hold scope.manage permission -> 403 Forbidden
     assert resp.status_code == 403
+
+
+def test_create_duplicate_authorization_returns_409(client, test_investigation, admin_headers):
+    now = datetime.now(timezone.utc)
+    payload = {
+        "target": "apexcorp.com",
+        "target_type": "DOMAIN",
+        "allowed_operations": ["RECON_PASSIVE"],
+        "authorization_reference": "REF-DUP-1",
+        "approved_by": "CSO",
+        "valid_to": (now + timedelta(days=30)).isoformat(),
+    }
+    resp1 = client.post(
+        f"/api/v1/investigations/{test_investigation.id}/authorizations",
+        json=payload,
+        headers=admin_headers,
+    )
+    assert resp1.status_code == 201
+
+    # Second creation with identical active target must return 409 Conflict
+    resp2 = client.post(
+        f"/api/v1/investigations/{test_investigation.id}/authorizations",
+        json=payload,
+        headers=admin_headers,
+    )
+    assert resp2.status_code == 409
+    err_body = resp2.json()
+    msg = err_body.get("detail") or err_body.get("error", {}).get("message", "")
+    assert "already exists" in msg
+
+
+def test_cascade_revocation_on_duplicate_authorizations(client, test_investigation, admin_headers, db_session):
+    from app.models.recon import TargetAuthorizationModel
+    import uuid
+
+    # Simulate preexisting duplicate authorizations (e.g., historical data)
+    now = datetime.now(timezone.utc)
+    id1 = f"authz-pre-{uuid.uuid4().hex[:8]}"
+    id2 = f"authz-pre-{uuid.uuid4().hex[:8]}"
+    
+    auth1 = TargetAuthorizationModel(
+        id=id1,
+        investigation_id=test_investigation.id,
+        target="apexcorp.com",
+        target_type="DOMAIN",
+        allowed_operations=["RECON_ACTIVE"],
+        authorization_reference="REF-HIST-1",
+        approved_by="CSO",
+        valid_from=now - timedelta(days=1),
+        valid_to=now + timedelta(days=30),
+        is_revoked=False,
+    )
+    auth2 = TargetAuthorizationModel(
+        id=id2,
+        investigation_id=test_investigation.id,
+        target="apexcorp.com",
+        target_type="DOMAIN",
+        allowed_operations=["RECON_ACTIVE"],
+        authorization_reference="REF-HIST-2",
+        approved_by="CSO",
+        valid_from=now - timedelta(days=1),
+        valid_to=now + timedelta(days=30),
+        is_revoked=False,
+    )
+    db_session.add_all([auth1, auth2])
+    db_session.commit()
+
+    # Revoke id1 via API -> must cascade revoke id2 as well so no active duplicates remain
+    del_resp = client.delete(
+        f"/api/v1/investigations/{test_investigation.id}/authorizations/{id1}",
+        headers=admin_headers,
+    )
+    assert del_resp.status_code == 200
+
+    # Verify both records are now revoked
+    db_session.refresh(auth1)
+    db_session.refresh(auth2)
+    assert auth1.is_revoked is True
+    assert auth2.is_revoked is True
+

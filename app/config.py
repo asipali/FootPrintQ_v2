@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from functools import lru_cache
 from typing import List, Literal, Optional
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, AliasChoices, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,6 +30,10 @@ class Settings(BaseSettings):
         default="sqlite:///./footprintiq.db",
         description="SQLAlchemy database connection URI"
     )
+    DB_FALLBACK_TO_SQLITE: bool = Field(
+        default=True,
+        description="Whether to fall back gracefully to SQLite if the primary database is unreachable"
+    )
 
     SECRET_KEY: str = Field(
         default="dev-insecure-secret-key-change-in-production-only",
@@ -40,6 +44,10 @@ class Settings(BaseSettings):
     LOG_FORMAT: Literal["structured", "standard"] = "structured"
 
     ALLOWED_HOSTS: List[str] = ["127.0.0.1", "localhost"]
+    FORWARDED_ALLOW_IPS: str = Field(
+        default="127.0.0.1",
+        description="IP addresses or subnets of trusted reverse proxies allowed to pass X-Forwarded headers",
+    )
 
     # Authentication & Session Security Configuration
     SESSION_COOKIE_NAME: str = "footprintiq_session"
@@ -71,11 +79,49 @@ class Settings(BaseSettings):
     DEMO_INVESTIGATOR_EMAIL: str = "investigator@footprint.org"
     DEMO_INVESTIGATOR_PASSWORD: Optional[str] = None
 
-    # Passive Reconnaissance & Evidence Storage (Phase 4)
+    # Passive Reconnaissance & Evidence Storage (Phase 4 & 5)
+    STORAGE_BACKEND: str = Field(
+        default="filesystem",
+        description="Evidence storage provider backend: 'filesystem' or 'seaweedfs'"
+    )
     EVIDENCE_STORAGE_PATH: str = Field(
         default="./evidence_storage",
-        description="Filesystem root for storing raw forensic evidence files"
+        description="Filesystem root for storing raw forensic evidence files (local adapter)"
     )
+    SEAWEEDFS_FILER_URL: str = Field(
+        default="http://localhost:8888",
+        description="Base URL of SeaweedFS Filer HTTP REST API"
+    )
+    SEAWEEDFS_COLLECTION: str = Field(
+        default="evidence",
+        description="SeaweedFS collection namespace for evidence objects"
+    )
+    SEAWEEDFS_REPLICATION: str = Field(
+        default="",
+        description="SeaweedFS replication setting for new volumes (e.g. '001', '010', empty for default)"
+    )
+    SEAWEEDFS_TIMEOUT_SECONDS: float = Field(
+        default=10.0,
+        description="SeaweedFS HTTP client timeout in seconds"
+    )
+    SEAWEEDFS_MAX_RETRIES: int = Field(
+        default=3,
+        description="Maximum bounded retry attempts for transient SeaweedFS HTTP failures"
+    )
+    SEAWEEDFS_AUTH_TOKEN: Optional[str] = Field(
+        default=None,
+        description="Optional Bearer token for authenticated SeaweedFS Filer requests"
+    )
+    SEAWEEDFS_FALLBACK_TO_FILESYSTEM: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("SEAWEEDFS_FALLBACK_TO_FILESYSTEM", "STORAGE_FALLBACK_TO_FILESYSTEM"),
+        description="Allow fallback to local filesystem if SeaweedFS is unavailable (locked out in staging/prod)"
+    )
+
+    @property
+    def STORAGE_FALLBACK_TO_FILESYSTEM(self) -> bool:
+        """Backward-compatible alias for SEAWEEDFS_FALLBACK_TO_FILESYSTEM."""
+        return self.SEAWEEDFS_FALLBACK_TO_FILESYSTEM
     RDAP_BOOTSTRAP_URL: str = Field(
         default="https://rdap.org/domain",
         description="Bootstrap endpoint for RDAP domain lookups"
@@ -148,6 +194,10 @@ class Settings(BaseSettings):
         default=True,
         description="Enforce TLS certificate verification when connecting to Greenbone over TLS"
     )
+    GVM_USE_TLS: bool = Field(
+        default=False,
+        description="Whether to use TLS for TCP connections to Greenbone (True for direct remote TLS, False for localhost TCP bridge)"
+    )
     GVM_CA_FILE: Optional[str] = Field(
         default=None,
         description="Optional CA bundle path used to verify the Greenbone GMP TLS certificate"
@@ -200,8 +250,23 @@ class Settings(BaseSettings):
             raise ValueError("CRITICAL: DEBUG mode must be disabled (False) in staging and production environments.")
         return v
 
+    @field_validator("STORAGE_BACKEND")
+    @classmethod
+    def validate_storage_backend(cls, v: str) -> str:
+        cleaned = (v or "").strip().lower()
+        if cleaned not in {"filesystem", "seaweedfs"}:
+            raise ValueError(f"STORAGE_BACKEND must be 'filesystem' or 'seaweedfs', got '{v}'")
+        return cleaned
+
     @model_validator(mode="after")
     def validate_demo_provisioning(self):
+        if self.APP_ENV in {"staging", "production"}:
+            # Condition 1: SQLite fallback is strictly locked out in staging and production
+            object.__setattr__(self, "DB_FALLBACK_TO_SQLITE", False)
+            # Storage fallback to filesystem is locked out in staging and production
+            object.__setattr__(self, "SEAWEEDFS_FALLBACK_TO_FILESYSTEM", False)
+            if self.STORAGE_BACKEND == "seaweedfs" and not self.SEAWEEDFS_FILER_URL:
+                raise ValueError("SEAWEEDFS_FILER_URL must be configured when STORAGE_BACKEND is 'seaweedfs'.")
         if self.APP_ENV in {"staging", "production"} and self.DEMO_ACCOUNTS_ENABLED:
             raise ValueError("Demo account provisioning cannot be enabled in production or staging.")
         if self.APP_ENV in {"staging", "production"} and self.SESSION_COOKIE_SECURE is False:

@@ -20,11 +20,12 @@ from app.core.auth import log_audit_event
 from app.models.investigation import InvestigationModel
 from app.models.recon import EvidenceModel, EntityModel, utc_now, ensure_utc
 from app.models.scan import ActiveScanJobModel, ScanFindingHostModel, ScanFindingPortModel
+from app.models.job import JobModel
 from app.models.user import UserModel
 from app.services.active.nmap_detector import get_nmap_detector
 from app.services.active.profiles import ScanProfile, get_scan_profile
 from app.services.active.xml_parser import parse_nmap_xml, NmapXmlParseError, ParsedNmapResult
-from app.services.evidence_store import EvidenceStore
+from app.services.evidence_store import EvidenceStore, get_evidence_store
 from app.services.target_authorization import classify_target, verify_target_authorization
 
 logger = logging.getLogger("footprintiq.nmap.runner")
@@ -317,6 +318,12 @@ class NmapRunner:
 
                 with db_factory() as db:
                     j = db.get(ActiveScanJobModel, job_id)
+                    durable_job = db.get(JobModel, job_id)
+                    if durable_job:
+                        durable_job.process_pid = proc.pid
+                        durable_job.status = "RUNNING"
+                        durable_job.started_at = utc_now()
+                        durable_job.progress = 25
                     if j:
                         log_audit_event(
                             db=db,
@@ -441,15 +448,17 @@ class NmapRunner:
 
             xml_content = xml_output_file.read_text(encoding="utf-8", errors="replace")
 
-            # Store forensic evidence
-            evidence_store = EvidenceStore()
+            # Store forensic evidence using configured primary backend with observable fallback
+            evidence_store = get_evidence_store()
             evidence_id = f"ev-nmap-{uuid.uuid4().hex[:12]}"
-            rel_path, content_hash, size_bytes = evidence_store.store_evidence(
+            stored_res = evidence_store.store_evidence(
                 investigation_id=j.investigation_id,
                 evidence_id=evidence_id,
                 source_type="nmap",
                 content=xml_content,
             )
+            rel_path, content_hash, size_bytes = stored_res
+            actual_backend = getattr(stored_res, "backend", evidence_store.last_backend_used)
 
             evidence_record = EvidenceModel(
                 id=evidence_id,
@@ -460,6 +469,7 @@ class NmapRunner:
                 target=j.target,
                 collection_status="SUCCESS" if exit_code == 0 else "PARTIAL",
                 raw_content_path=rel_path,
+                storage_backend=actual_backend,
                 content_hash=content_hash,
                 content_size_bytes=size_bytes,
                 source_metadata={
@@ -470,6 +480,7 @@ class NmapRunner:
                 collected_at=utc_now(),
             )
             db.add(evidence_record)
+            db.flush()  # Ensure evidence row is inserted before updating job foreign keys
             j.evidence_id = evidence_id
 
             # Parse XML and persist structured findings
@@ -480,13 +491,15 @@ class NmapRunner:
                 for host in parsed_result.hosts:
                     host_id = f"host-{uuid.uuid4().hex[:12]}"
                     primary_hostname = host.hostnames[0] if host.hostnames else None
+                    # Record reachability state (HOST_CONFIRMED_UP, HOST_ASSUMED_UP, HOST_UNREACHABLE, HOST_UNKNOWN)
+                    reachability = getattr(host, "reachability_state", host.status)
                     host_record = ScanFindingHostModel(
                         id=host_id,
                         investigation_id=j.investigation_id,
                         job_id=j.id,
                         address=host.address,
                         address_type=host.address_type,
-                        status=host.status,
+                        status=reachability,
                         hostname=primary_hostname,
                         os_match=host.os_match,
                         evidence_id=evidence_id,
@@ -533,13 +546,50 @@ class NmapRunner:
                         evidence_id=evidence_id,
                     )
 
-                j.status = "COMPLETED" if exit_code == 0 else "PARTIAL"
+                open_ports_count = sum(1 for h in parsed_result.hosts for p in h.ports if p.state == "open")
+                all_hosts_down = (parsed_result.total_hosts > 0 and parsed_result.hosts_up == 0) or (
+                    len(parsed_result.hosts) > 0 and all(getattr(h, "reachability_state", h.status) == "HOST_UNREACHABLE" or h.status == "down" for h in parsed_result.hosts)
+                )
+                all_hosts_assumed = len(parsed_result.hosts) > 0 and all(
+                    getattr(h, "reachability_state", None) == "HOST_ASSUMED_UP" for h in parsed_result.hosts
+                )
+
+                if exit_code != 0:
+                    j.status = "FAILED"
+                    j.error_category = "SCANNER_EXECUTION_FAILURE"
+                    j.error_message = stderr_data.decode("utf-8", errors="replace")[:500] or f"Nmap exited with code {exit_code}"
+                elif len(parsed_result.hosts) == 0:
+                    j.status = "COMPLETED"
+                    j.error_category = "NO_HOSTS_FOUND"
+                    j.error_message = "Scan completed but no responsive targets were discovered."
+                elif all_hosts_down:
+                    j.status = "COMPLETED"
+                    j.error_category = "HOST_UNREACHABLE"
+                    j.error_message = "Host unreachable (target host down or unresponsive)."
+                elif all_hosts_assumed and open_ports_count == 0:
+                    j.status = "COMPLETED"
+                    j.error_category = "HOST_ASSUMED_UP_FILTERED"
+                    j.error_message = "Host assumed up because discovery was skipped (-Pn), but all scanned ports were filtered or closed."
+                else:
+                    j.status = "COMPLETED"
+                    j.error_category = None
+                    j.error_message = None
+
+                durable_job = db.get(JobModel, job_id)
+                if durable_job:
+                    durable_job.status = j.status
+                    durable_job.progress = 100
+                    durable_job.evidence_id = evidence_id
+                    durable_job.completed_at = j.completed_at
+                    durable_job.duration_seconds = j.duration_seconds
+                    durable_job.error_category = j.error_category
+                    durable_job.error_message = j.error_message
                 db.commit()
 
                 log_audit_event(
                     db=db,
                     event_type="SCAN_ACTIVE_COMPLETED",
-                    outcome="SUCCESS",
+                    outcome="SUCCESS" if j.status == "COMPLETED" else "FAILURE",
                     actor_id=j.requested_by,
                     request_id=request_id,
                     ip_address=client_ip,
@@ -547,6 +597,9 @@ class NmapRunner:
                         "job_id": j.id,
                         "status": j.status,
                         "hosts_found": len(parsed_result.hosts),
+                        "hosts_up": parsed_result.hosts_up,
+                        "open_ports_count": open_ports_count,
+                        "error_category": j.error_category,
                         "evidence_id": evidence_id,
                     },
                 )
@@ -675,6 +728,14 @@ class NmapRunner:
                     logger.warning("Error killing process for job %s: %s", job_id, exc)
 
         job = db.get(ActiveScanJobModel, job_id)
+        durable_job = db.get(JobModel, job_id)
+        if durable_job and durable_job.status in ("QUEUED", "RUNNING", "CLAIMED", "CANCEL_REQUESTED"):
+            durable_job.status = "CANCELLED"
+            durable_job.cancellation_requested = True
+            durable_job.cancellation_reason = reason
+            durable_job.completed_at = utc_now()
+            if durable_job.started_at:
+                durable_job.duration_seconds = (ensure_utc(durable_job.completed_at) - ensure_utc(durable_job.started_at)).total_seconds()
         if job and job.status in ("QUEUED", "RUNNING", "AUTHORIZING"):
             job.status = "CANCELLED"
             job.cancellation_reason = reason

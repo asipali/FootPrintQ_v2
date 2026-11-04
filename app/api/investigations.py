@@ -6,7 +6,16 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 from app.database import get_db
 from app.models.investigation import InvestigationModel
-from app.schemas.investigation import InvestigationCreate, InvestigationResponse, InvestigationUpdate
+from app.schemas.investigation import (
+    InvestigationCreate,
+    InvestigationResponse,
+    InvestigationUpdate,
+    WorkflowStartRequest,
+    WorkflowCancelRequest,
+)
+from app.services.workflow.orchestrator import InvestigationWorkflowOrchestrator
+from app.services.workflow.correlation import InvestigationCorrelationService
+from app.services.reporting.pdf_generator import InvestigationReportGenerator
 from app.logging_config import get_logger
 
 from app.api.deps import get_current_user_optional, verify_csrf_token
@@ -259,6 +268,190 @@ def export_investigation_graphml(
     return Response(
         content=xml_content,
         media_type="application/xml",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
+# End-to-End Investigation Workflow Endpoints
+# -----------------------------------------------------------------------------
+
+@router.post("/{investigation_id}/workflow/start")
+async def start_investigation_workflow(
+    investigation_id: str,
+    payload: WorkflowStartRequest = WorkflowStartRequest(),
+    request: Request = None,
+    current_user: Optional[UserModel] = Depends(get_current_user_optional),
+    csrf_ok: None = Depends(verify_csrf_token),
+    db: Session = Depends(get_db),
+):
+    """Executes the full multi-stage forensic investigation workflow."""
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Authentication required", headers={"WWW-Authenticate": "Bearer"})
+    if not has_permission(current_user.role, "investigation.create"):
+        raise HTTPException(status_code=403, detail="Operation requires permission: investigation.create")
+
+    inv = require_investigation_access(db.get(InvestigationModel, investigation_id), current_user)
+    orchestrator = InvestigationWorkflowOrchestrator(db=db)
+
+    try:
+        summary = await orchestrator.execute_workflow(
+            investigation_id=investigation_id,
+            actor_user=current_user,
+            target=payload.target,
+            scan_profile_id=payload.scan_profile_id or "service_inventory",
+            vuln_profile_id=payload.vuln_profile_id or "full_and_fast",
+            client_ip=request.client.host if request and request.client else None,
+            request_id=getattr(request.state, "request_id", None) if request and hasattr(request, "state") else None,
+        )
+        return summary
+    except ValueError as ve:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+    except PermissionError as pe:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(pe))
+
+
+@router.post("/{investigation_id}/workflow/dispatch")
+def dispatch_investigation_workflow(
+    investigation_id: str,
+    payload: WorkflowStartRequest = WorkflowStartRequest(),
+    current_user: Optional[UserModel] = Depends(get_current_user_optional),
+    csrf_ok: None = Depends(verify_csrf_token),
+    db: Session = Depends(get_db),
+):
+    """Dispatches investigation workflow execution as a durable, asynchronous background job."""
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Authentication required", headers={"WWW-Authenticate": "Bearer"})
+    if not has_permission(current_user.role, "investigation.create"):
+        raise HTTPException(status_code=403, detail="Operation requires permission: investigation.create")
+
+    require_investigation_access(db.get(InvestigationModel, investigation_id), current_user)
+    orchestrator = InvestigationWorkflowOrchestrator(db=db)
+
+    try:
+        job = orchestrator.dispatch_workflow(
+            investigation_id=investigation_id,
+            actor_user=current_user,
+            target=payload.target,
+            scan_profile_id=payload.scan_profile_id or "service_inventory",
+            vuln_profile_id=payload.vuln_profile_id or "full_and_fast",
+        )
+        return job.to_dict()
+    except ValueError as ve:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+
+
+@router.get("/{investigation_id}/workflow/status")
+def get_investigation_workflow_status(
+    investigation_id: str,
+    current_user: Optional[UserModel] = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    """Returns the current workflow status, progress, and stage execution summary."""
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Authentication required", headers={"WWW-Authenticate": "Bearer"})
+    if not has_permission(current_user.role, "investigation.view"):
+        raise HTTPException(status_code=403, detail="Operation requires permission: investigation.view")
+
+    inv = require_investigation_access(db.get(InvestigationModel, investigation_id), current_user)
+
+    from app.models.job import JobModel
+    jobs = db.scalars(
+        select(JobModel).where(JobModel.investigation_id == investigation_id).order_by(JobModel.created_at.desc())
+    ).all()
+
+    return {
+        "investigation_id": inv.id,
+        "investigation_name": inv.name,
+        "status": inv.status,
+        "active_scanning_enabled": inv.active_scanning_enabled,
+        "total_jobs_count": len(jobs),
+        "jobs": [j.to_dict() for j in jobs[:20]],
+    }
+
+
+@router.post("/{investigation_id}/workflow/cancel")
+def cancel_investigation_workflow(
+    investigation_id: str,
+    payload: WorkflowCancelRequest = WorkflowCancelRequest(),
+    current_user: Optional[UserModel] = Depends(get_current_user_optional),
+    csrf_ok: None = Depends(verify_csrf_token),
+    db: Session = Depends(get_db),
+):
+    """Cancels running workflow stages and aborts active queue items."""
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Authentication required", headers={"WWW-Authenticate": "Bearer"})
+    if not has_permission(current_user.role, "investigation.create"):
+        raise HTTPException(status_code=403, detail="Operation requires permission: investigation.create")
+
+    require_investigation_access(db.get(InvestigationModel, investigation_id), current_user)
+    orchestrator = InvestigationWorkflowOrchestrator(db=db)
+    return orchestrator.cancel_workflow(
+        investigation_id=investigation_id,
+        actor_user=current_user,
+        reason=payload.reason,
+    )
+
+
+@router.get("/{investigation_id}/workflow/correlation")
+def get_investigation_correlation(
+    investigation_id: str,
+    current_user: Optional[UserModel] = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    """Returns cross-stage correlated finding assets, evidence provenance, and entity graph."""
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Authentication required", headers={"WWW-Authenticate": "Bearer"})
+    if not has_permission(current_user.role, "investigation.view"):
+        raise HTTPException(status_code=403, detail="Operation requires permission: investigation.view")
+
+    require_investigation_access(db.get(InvestigationModel, investigation_id), current_user)
+    service = InvestigationCorrelationService(db=db)
+    try:
+        return service.correlate_investigation(investigation_id=investigation_id)
+    except ValueError as ve:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(ve))
+
+
+@router.get("/{investigation_id}/workflow/report/pdf")
+def get_investigation_pdf_report(
+    investigation_id: str,
+    current_user: Optional[UserModel] = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    """Generates and downloads the consolidated investigation dossier PDF."""
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Authentication required", headers={"WWW-Authenticate": "Bearer"})
+    if not has_permission(current_user.role, "report.export"):
+        raise HTTPException(status_code=403, detail="Operation requires permission: report.export")
+
+    require_investigation_access(db.get(InvestigationModel, investigation_id), current_user)
+
+    try:
+        pdf_bytes = InvestigationReportGenerator.generate_pdf(
+            investigation_id=investigation_id,
+            db=db,
+            generated_by=current_user.full_name or current_user.username,
+        )
+    except Exception as e:
+        logger.exception("PDF report generation failed for %s", investigation_id)
+        raise HTTPException(status_code=500, detail=f"Failed to generate PDF report: {str(e)}")
+
+    log_audit_event(
+        db=db,
+        event_type="REPORT_EXPORT",
+        actor_id=current_user.id,
+        outcome="SUCCESS",
+        details={"investigation_id": investigation_id, "format": "PDF"},
+    )
+
+    filename = f"investigation_report_{investigation_id}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
             "Cache-Control": "no-cache, no-store, must-revalidate",

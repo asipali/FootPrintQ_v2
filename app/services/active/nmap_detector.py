@@ -60,7 +60,10 @@ class NmapDetector:
         binary_path = self.resolve_binary_path()
         if not binary_path:
             return {
+                "available": False,
                 "is_available": False,
+                "status": "NOT_FOUND",
+                "executable_path": None,
                 "version": None,
                 "binary_name": "nmap",
                 "diagnostic_code": "NOT_INSTALLED",
@@ -86,7 +89,10 @@ class NmapDetector:
                     proc.stderr.strip() or proc.stdout.strip(),
                 )
                 return {
+                    "available": False,
                     "is_available": False,
+                    "status": "EXECUTION_ERROR",
+                    "executable_path": binary_path,
                     "version": None,
                     "binary_name": os.path.basename(binary_path),
                     "diagnostic_code": "INVOCATION_FAILED",
@@ -105,7 +111,10 @@ class NmapDetector:
             platform_str = platform_match.group(1) if platform_match else None
 
             return {
+                "available": True,
                 "is_available": True,
+                "status": "READY",
+                "executable_path": binary_path,
                 "version": version,
                 "platform": platform_str,
                 "binary_name": os.path.basename(binary_path),
@@ -123,7 +132,10 @@ class NmapDetector:
         except PermissionError as pe:
             logger.error("Permission denied when invoking Nmap binary: %s", pe)
             return {
+                "available": False,
                 "is_available": False,
+                "status": "PERMISSION_DENIED",
+                "executable_path": binary_path,
                 "version": None,
                 "binary_name": os.path.basename(binary_path),
                 "diagnostic_code": "PERMISSION_DENIED",
@@ -134,7 +146,10 @@ class NmapDetector:
         except subprocess.TimeoutExpired:
             logger.error("Timeout checking Nmap availability via --version")
             return {
+                "available": False,
                 "is_available": False,
+                "status": "TIMEOUT",
+                "executable_path": binary_path,
                 "version": None,
                 "binary_name": os.path.basename(binary_path),
                 "diagnostic_code": "TIMEOUT",
@@ -145,7 +160,10 @@ class NmapDetector:
         except Exception as exc:
             logger.exception("Unexpected error while checking Nmap availability: %s", exc)
             return {
+                "available": False,
                 "is_available": False,
+                "status": "EXECUTION_ERROR",
+                "executable_path": binary_path,
                 "version": None,
                 "binary_name": os.path.basename(binary_path),
                 "diagnostic_code": "UNEXPECTED_ERROR",

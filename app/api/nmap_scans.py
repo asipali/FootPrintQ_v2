@@ -12,11 +12,12 @@ from app.models.recon import EvidenceModel
 from app.models.scan import ActiveScanJobModel, ScanFindingHostModel
 from app.models.user import UserModel
 from app.services.investigation_access import require_investigation_access
-from app.api.deps import get_current_user, require_permission
+from app.api.deps import get_current_user, require_permission, verify_csrf_token
 from app.services.active.nmap_detector import get_nmap_detector
 from app.services.active.profiles import list_scan_profiles, get_scan_profile
 from app.services.active.runner import get_nmap_runner, NmapExecutionError
 from app.services.evidence_store import get_evidence_store
+from app.services.jobs.queue import get_job_queue
 from app.schemas.scan import (
     NmapStatusResponse,
     ScanProfileResponse,
@@ -72,6 +73,7 @@ async def dispatch_nmap_scan(
     payload: ScanJobCreate,
     request: Request,
     current_user: UserModel = Depends(require_permission("recon.active")),
+    csrf_ok: None = Depends(verify_csrf_token),
     db: Session = Depends(get_db),
 ) -> ScanJobResponse:
     """Dispatches a vetted Nmap scan against an explicitly authorized target."""
@@ -102,6 +104,17 @@ async def dispatch_nmap_scan(
             actor_user=current_user,
             client_ip=client_ip,
             request_id=req_id,
+        )
+        get_job_queue().enqueue_job(
+            db=db,
+            investigation_id=investigation.id,
+            job_type="NMAP_SCAN",
+            operation="SCAN_ACTIVE",
+            target=payload.target,
+            requested_by=current_user.id,
+            parameters={"profile_id": payload.profile_id},
+            job_id=job.id,
+            prevent_duplicates=False,
         )
     except NmapExecutionError as exc:
         raise HTTPException(
@@ -183,6 +196,7 @@ async def cancel_scan_job(
     job_id: str,
     payload: ScanCancelRequest,
     current_user: UserModel = Depends(require_permission("recon.active")),
+    csrf_ok: None = Depends(verify_csrf_token),
     db: Session = Depends(get_db),
 ) -> ScanJobResponse:
     """Terminates subprocess and marks scan job as cancelled."""
@@ -206,6 +220,12 @@ async def cancel_scan_job(
         job_id=job_id,
         actor_id=current_user.id,
         reason=payload.reason or "User requested cancellation",
+    )
+    get_job_queue().request_cancellation(
+        db=db,
+        job_id=job_id,
+        reason=payload.reason or "User requested cancellation",
+        actor_id=current_user.id,
     )
     db.refresh(job)
     return ScanJobResponse(**job.to_dict())
@@ -311,7 +331,10 @@ def download_scan_xml(
 
     evidence_store = get_evidence_store()
     try:
-        content_bytes, computed_hash = evidence_store.read_evidence(evidence.raw_content_path)
+        content_bytes, computed_hash = evidence_store.read_evidence(
+            evidence.raw_content_path,
+            backend=evidence.storage_backend,
+        )
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
