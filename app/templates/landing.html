@@ -60,42 +60,17 @@
       <p>Use capabilities available in the application today, with clear boundaries around authorization and optional external tooling.</p>
     </header>
     <div class="public-grid">
-      <article class="public-card">
-        <span class="public-card-mark">01</span>
-        <h3>Passive Reconnaissance</h3>
-        <p>Collect and organize public domain intelligence through the platform's passive collection workflow, including DNS, RDAP, and WHOIS sources.</p>
-        <span class="badge badge-passive">Available</span>
-      </article>
-      <article class="public-card">
-        <span class="public-card-mark">02</span>
-        <h3>DNS &amp; Domain Intelligence</h3>
-        <p>Review supported DNS records and domain-registration information as investigation evidence.</p>
-        <span class="badge badge-brand">Available</span>
-      </article>
-      <article class="public-card">
-        <span class="public-card-mark">03</span>
-        <h3>Network Assessment (Nmap)</h3>
-        <p>Run configured Nmap profiles only when the target is explicitly authorized within the investigation.</p>
-        <span class="badge badge-active">AUTHORIZED TARGETS ONLY</span>
-      </article>
-      <article class="public-card">
-        <span class="public-card-mark">04</span>
-        <h3>Vulnerability Assessment</h3>
-        <p>Manage Greenbone vulnerability assessment jobs where the required scanner service is configured and available.</p>
-        <span class="badge badge-info">REQUIRES GVM DAEMON</span>
-      </article>
-      <article class="public-card">
-        <span class="public-card-mark">05</span>
-        <h3>Evidence Management</h3>
-        <p>Store investigation evidence with provenance metadata and SHA-256 integrity hashes.</p>
-        <span class="badge badge-passive">CRYPTOGRAPHICALLY VERIFIED</span>
-      </article>
-      <article class="public-card">
-        <span class="public-card-mark">06</span>
-        <h3>Investigation Reports</h3>
-        <p>Export investigation reports in the supported PDF and GraphML formats.</p>
-        <span class="badge badge-brand">PDF &amp; GRAPHML SUPPORTED</span>
-      </article>
+      {% for card in feature_cards %}
+      <a href="{{ card.url }}" class="public-card public-card-link" aria-label="{{ card.title }} - {{ card.badge }}">
+        <span class="public-card-mark" aria-hidden="true">{{ card.mark }}</span>
+        <h3>{{ card.title }}</h3>
+        <p>{{ card.body }}</p>
+        <div class="public-card-meta">
+          <span class="badge {{ card.badge_class }}">{{ card.badge }}</span>
+          <span class="public-card-action" aria-hidden="true">{{ card.action_text }} &rarr;</span>
+        </div>
+      </a>
+      {% endfor %}
     </div>
     <div class="section-link-row"><a href="/features">Explore all platform capabilities &rarr;</a></div>
   </div>

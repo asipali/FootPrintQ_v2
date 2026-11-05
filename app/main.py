@@ -253,9 +253,15 @@ def create_app(settings: Settings = None) -> FastAPI:
                 ))
             role_restricted = path.startswith(("/admin/", "/audit"))
             if role_restricted and current_user_role != ROLE_ADMINISTRATOR:
-                return apply_security_headers(JSONResponse(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    content={"error": {"status_code": 403, "message": "Administrator role required", "request_id": req_id}},
+                if is_api:
+                    return apply_security_headers(JSONResponse(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        content={"error": {"status_code": 403, "message": "Administrator role required", "request_id": req_id}},
+                        headers={"X-Request-ID": req_id},
+                    ))
+                return apply_security_headers(RedirectResponse(
+                    url="/access-denied",
+                    status_code=status.HTTP_303_SEE_OTHER,
                     headers={"X-Request-ID": req_id},
                 ))
             required_permission = None
@@ -413,6 +419,19 @@ def create_app(settings: Settings = None) -> FastAPI:
     app.include_router(api_v1_router, prefix="/api")
 
 
+    AUTH_LOOP_PATHS = {
+        "/login", "/auth/login", "/auth/logout",
+        "/signup", "/auth/signup", "/register",
+    }
+
+    def resolve_safe_next(candidate: Optional[str]) -> Optional[str]:
+        if not candidate or not is_safe_redirect_url(candidate):
+            return None
+        path_part = candidate.split("?")[0].split("#")[0].rstrip("/")
+        if path_part in AUTH_LOOP_PATHS:
+            return None
+        return candidate
+
     # =========================================================================
     # Dashboard HTML & Web Authentication Routes (Jinja2 + HTMX)
     # =========================================================================
@@ -426,7 +445,7 @@ def create_app(settings: Settings = None) -> FastAPI:
         db: Session = Depends(get_db),
     ):
         """Renders login page or redirects if already authenticated."""
-        safe_next = next if next and is_safe_redirect_url(next) else None
+        safe_next = resolve_safe_next(next)
         current_user = get_current_user_optional(request, db=db)
         if current_user:
             return RedirectResponse(
@@ -490,7 +509,8 @@ def create_app(settings: Settings = None) -> FastAPI:
         client_ip = request.client.host if request.client else None
         req_id = getattr(request.state, "request_id", None)
         user_agent = request.headers.get("user-agent")
-        safe_next = next if next and is_safe_redirect_url(next) else None
+        submitted_next = next or request.query_params.get("next") or ""
+        safe_next = resolve_safe_next(submitted_next)
 
         # 1. CSRF validation
         expected_csrf = request.cookies.get(app_settings.CSRF_COOKIE_NAME)
@@ -758,6 +778,7 @@ def create_app(settings: Settings = None) -> FastAPI:
         return templates.TemplateResponse(
             request=request,
             name="access_denied.html",
+            status_code=status.HTTP_403_FORBIDDEN,
             context={
                 "app_name": app_settings.APP_NAME,
                 "app_version": app_settings.APP_VERSION,

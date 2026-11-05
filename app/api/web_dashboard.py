@@ -59,6 +59,72 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 router = APIRouter(include_in_schema=False)
 
+FEATURE_CARDS = [
+    {
+        "mark": "01",
+        "title": "Passive Reconnaissance",
+        "body": "Collect and organize public domain intelligence through the platform's passive collection workflow, including DNS & Domain Intelligence, RDAP, and WHOIS sources.",
+        "badge": "Available",
+        "badge_class": "badge-passive",
+        "url": "/scans#passive-recon",
+        "action_text": "Open passive recon",
+    },
+    {
+        "mark": "02",
+        "title": "Investigation Management",
+        "body": "Create investigation records, document scope and context, and review associated collection and assessment activity.",
+        "badge": "Available",
+        "badge_class": "badge-brand",
+        "url": "/investigations",
+        "action_text": "Open investigations",
+    },
+    {
+        "mark": "03",
+        "title": "Network Assessment (Nmap)",
+        "body": "Run configured Nmap profiles only when the target is explicitly authorized within the investigation.",
+        "badge": "AUTHORIZED TARGETS ONLY",
+        "badge_class": "badge-active",
+        "url": "/scans#nmap-scans",
+        "action_text": "Open network scans",
+    },
+    {
+        "mark": "04",
+        "title": "Vulnerability Assessment",
+        "body": "Manage Greenbone vulnerability assessment jobs and track correlated CVE findings across authorized targets.",
+        "badge": "REQUIRES GVM DAEMON",
+        "badge_class": "badge-info",
+        "url": "/findings",
+        "action_text": "Explore findings",
+    },
+    {
+        "mark": "05",
+        "title": "Evidence Management",
+        "body": "Review stored evidence with timestamps, provenance details, and cryptographically verified SHA-256 integrity hashes.",
+        "badge": "CRYPTOGRAPHICALLY VERIFIED",
+        "badge_class": "badge-passive",
+        "url": "/evidence",
+        "action_text": "Open evidence ledger",
+    },
+    {
+        "mark": "06",
+        "title": "Investigation Reports",
+        "body": "Export investigation reports and forensic dossiers in supported PDF and GraphML formats.",
+        "badge": "PDF & GRAPHML SUPPORTED",
+        "badge_class": "badge-brand",
+        "url": "/investigations",
+        "action_text": "View report exports",
+    },
+    {
+        "mark": "07",
+        "title": "Authentication and Access Control",
+        "body": "Use server-managed sessions, role and permission checks, CSRF defenses, and administrator review of pending investigators.",
+        "badge": "ROLE-BASED ACCESS",
+        "badge_class": "badge-amber",
+        "url": "/admin/investigators",
+        "action_text": "Manage access control",
+    },
+]
+
 PUBLIC_PAGES = {
     "features": {
         "title": "Platform capabilities",
@@ -66,15 +132,7 @@ PUBLIC_PAGES = {
         "description": "Use the capabilities implemented in FootprintIQ to organize passive intelligence, authorized assessments, evidence, and reports. Optional integrations depend on your deployment.",
         "eyebrow": "Platform",
         "layout": "cards",
-        "items": [
-            {"mark": "01", "title": "Passive reconnaissance", "body": "Run the passive collection workflow for public domain intelligence, including DNS, RDAP, and WHOIS sources."},
-            {"mark": "02", "title": "Investigation management", "body": "Create investigation records, document scope and context, and review associated collection and assessment activity."},
-            {"mark": "03", "title": "Authorized Nmap assessments", "body": "Launch configured Nmap profiles only when the requested target is covered by an explicit authorization record."},
-            {"mark": "04", "title": "Vulnerability assessments", "body": "Create and track Greenbone vulnerability assessment jobs when the Greenbone service is configured and available."},
-            {"mark": "05", "title": "Evidence management", "body": "Review stored evidence with timestamps, provenance details, and SHA-256 integrity hashes."},
-            {"mark": "06", "title": "Investigation exports", "body": "Generate investigation reports in PDF and GraphML formats from the supported reporting workflows."},
-            {"mark": "07", "title": "Authentication and access control", "body": "Use server-managed sessions, role and permission checks, CSRF defenses, and administrator review of pending investigators."},
-        ],
+        "items": FEATURE_CARDS,
         "notice": "Scanner availability depends on the local deployment. Active scanning is restricted to explicitly authorized targets.",
     },
     "how-it-works": {
@@ -202,6 +260,7 @@ def render_landing(
         "allow_public_signup": settings.ALLOW_PUBLIC_SIGNUP,
         "logged_out": logged_out,
         "product_screenshots": [],
+        "feature_cards": FEATURE_CARDS,
     })
     res = templates.TemplateResponse(request=request, name="landing.html", context=ctx)
     if not request.cookies.get(settings.CSRF_COOKIE_NAME):

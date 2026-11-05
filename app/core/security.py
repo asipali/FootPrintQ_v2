@@ -2,6 +2,7 @@ import re
 import hashlib
 import secrets
 from typing import Set, Dict, Optional, Tuple
+from urllib.parse import urlsplit, unquote
 import argon2
 from argon2.exceptions import VerifyMismatchError, VerificationError, InvalidHashError
 
@@ -55,20 +56,53 @@ def validate_password_strength(password: str) -> Tuple[bool, str]:
 
 
 def is_safe_redirect_url(target: Optional[str]) -> bool:
-    """Validates that a redirection URL is safe, local, and relative (prevents open redirects)."""
+    """Validates that a redirection URL is safe, local, and relative (prevents open redirects).
+
+    Enforces:
+    - Must be a non-empty string starting with exactly one leading slash '/'
+    - Rejects external schemes (http:, https:, etc.) and non-HTTP schemes (javascript:, data:, vbscript:)
+    - Rejects protocol-relative URLs (//evil.com, /\\evil.com)
+    - Rejects URL-encoded tricks (/%2f/evil.com, /%5cevil.com)
+    - Rejects CRLF and control characters (\r, \n, \t, \0)
+    - Rejects userinfo (@) and authority characters in path
+    """
     if not target or not isinstance(target, str):
         return False
     target_clean = target.strip()
-    # Must start with exactly one leading slash
-    if not target_clean.startswith("/") or target_clean.startswith("//") or target_clean.startswith("/\\"):
+    if not target_clean or not target_clean.startswith("/"):
         return False
-    # Reject backslashes and carriage returns / control characters
-    if "\\" in target_clean or "\r" in target_clean or "\n" in target_clean:
+    if target_clean.startswith("//") or target_clean.startswith("/\\"):
         return False
-    # Reject scheme prefixes (e.g., http:, javascript:, data:)
-    path_part = target_clean.split("?")[0]
-    if ":" in path_part:
+    if any(c in target_clean for c in ("\r", "\n", "\t", "\0", "\\")):
         return False
+
+    # Check unquoted representation to block double-encoding or encoded separators
+    try:
+        unquoted = unquote(target_clean)
+    except Exception:
+        return False
+    if unquoted.startswith("//") or unquoted.startswith("/\\") or "\\" in unquoted:
+        return False
+    if any(c in unquoted for c in ("\r", "\n", "\t", "\0")):
+        return False
+
+    # Parse with urlsplit to verify absence of scheme or netloc
+    try:
+        parsed = urlsplit(target_clean)
+        if parsed.scheme or parsed.netloc:
+            return False
+    except Exception:
+        return False
+
+    # Path component before query and fragment
+    path_only = target_clean.split("?")[0].split("#")[0]
+    if ":" in path_only or "@" in path_only:
+        return False
+
+    unquoted_path = unquoted.split("?")[0].split("#")[0]
+    if ":" in unquoted_path or "@" in unquoted_path:
+        return False
+
     return True
 
 
