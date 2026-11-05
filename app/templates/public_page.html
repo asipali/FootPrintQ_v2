@@ -35,11 +35,25 @@
       {% else %}
       <div class="public-grid">
         {% for item in page["items"] %}
-        <article class="public-card">
-          <span class="public-card-mark" aria-hidden="true">{{ item.mark or "%02d"|format(loop.index) }}</span>
-          <h3>{{ item.title }}</h3>
-          <p>{{ item.body }}</p>
-        </article>
+          {% if item.url %}
+          <a href="{{ item.url }}" class="public-card public-card-link" aria-label="{{ item.title }}{% if item.badge %} - {{ item.badge }}{% endif %}">
+            <span class="public-card-mark" aria-hidden="true">{{ item.mark or "%02d"|format(loop.index) }}</span>
+            <h3>{{ item.title }}</h3>
+            <p>{{ item.body }}</p>
+            <div class="public-card-meta">
+              {% if item.badge %}
+              <span class="badge {{ item.badge_class or 'badge-brand' }}">{{ item.badge }}</span>
+              {% endif %}
+              <span class="public-card-action" aria-hidden="true">{{ item.action_text or 'Open feature' }} &rarr;</span>
+            </div>
+          </a>
+          {% else %}
+          <article class="public-card">
+            <span class="public-card-mark" aria-hidden="true">{{ item.mark or "%02d"|format(loop.index) }}</span>
+            <h3>{{ item.title }}</h3>
+            <p>{{ item.body }}</p>
+          </article>
+          {% endif %}
         {% endfor %}
       </div>
       {% endif %}

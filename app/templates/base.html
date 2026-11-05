@@ -19,7 +19,7 @@
       }
     }());
   </script>
-  <link rel="stylesheet" href="/static/css/main.css">
+  <link rel="stylesheet" href="/static/css/main.css?v={{ app_version }}">
   <script src="/static/js/theme.js" defer></script>
   <script src="/static/js/htmx.min.js" defer></script>
   {% block extra_head %}{% endblock %}
@@ -145,5 +145,13 @@
       </div>
     </div>
   </footer>
+  <script>
+    document.addEventListener("keydown", function(e) {
+      if ((e.key === " " || e.key === "Spacebar") && document.activeElement && document.activeElement.classList.contains("public-card-link")) {
+        e.preventDefault();
+        document.activeElement.click();
+      }
+    });
+  </script>
 </body>
 </html>
